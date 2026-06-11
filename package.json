@@ -1,0 +1,33 @@
+{
+  "name": "exoswarm-salvage",
+  "version": "1.0.0",
+  "description": "Top-down sci-fi survival roguelite shooter on vanilla JS + Canvas 2D — no libraries, no assets, single file.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "keywords": [
+    "game",
+    "canvas",
+    "roguelite",
+    "shooter",
+    "vanilla-js",
+    "html5-game"
+  ],
+  "author": "chezetti",
+  "license": "MIT",
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "eslint": "^9.17.0",
+    "globals": "^15.14.0",
+    "prettier": "^3.4.2",
+    "vite": "^6.0.7"
+  }
+}
