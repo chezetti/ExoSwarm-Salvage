@@ -30,14 +30,15 @@ class Turret {
     this.fireT -= dt;
     let target = null,
       bd = Infinity;
-    for (const e of this.game.enemies) {
-      if (e.dead) continue;
+    this.game.enemyGrid.queryCircle(this.x, this.y, this.range + 30, (e) => {
+      if (e.dead) return false;
       const d = dist(this.x, this.y, e.x, e.y);
       if (d < this.range && d < bd) {
         bd = d;
         target = e;
       }
-    }
+      return false;
+    });
     if (target) {
       this.aim = angleTo(this.x, this.y, target.x, target.y);
       if (this.fireT <= 0) {

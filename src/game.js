@@ -2,7 +2,21 @@ import { TAU, clamp, rand, randInt, dist, dist2, pick, fmtTime } from './core/ut
 import { Sound } from './core/audio.js';
 import { Input } from './core/input.js';
 import { Camera } from './core/camera.js';
-import { WORLD_W, WORLD_H, RESOURCE_TYPES, UPGRADES, MISSIONS } from './config/data.js';
+import {
+  WORLD_W,
+  WORLD_H,
+  RESOURCE_TYPES,
+  WEAPONS,
+  UPGRADES,
+  MISSIONS,
+  DEVICES,
+  BIOMES,
+} from './config/data.js';
+import { Hazard } from './world/hazard.js';
+import { Boss } from './entities/boss.js';
+import { WEAPON_CHOICES, DEVICE_CHOICES, cycleChoice } from './config/loadouts.js';
+import { burst } from './entities/particles.js';
+import { applyStatus } from './systems/status.js';
 import { Player } from './entities/player.js';
 import { Enemy } from './entities/enemy.js';
 import { Hive } from './entities/hive.js';
@@ -10,6 +24,9 @@ import { ResourceNode } from './world/resource.js';
 import { Mule } from './world/mule.js';
 import { Outpost } from './world/outpost.js';
 import { Mission } from './systems/mission.js';
+import { SpatialGrid } from './systems/spatialGrid.js';
+import { Music } from './systems/music.js';
+import { tickCombo } from './systems/combo.js';
 
 /* ================================ GAME ================================== */
 const SAVE_KEY = 'exoswarm_salvage_save_v1';
@@ -29,6 +46,10 @@ function defaultMeta() {
       hydroponicsTray: 0,
     },
     unlockedWeapons: ['pulse', 'shotgun', 'arc'],
+    loadout: {
+      weapons: ['pulse', 'shotgun', 'arc'],
+      devices: ['turret', 'shield', 'scanner', 'mine'],
+    },
     runCount: 0,
     bestScore: 0,
     totalKills: 0,
@@ -51,6 +72,7 @@ class Game {
     this.showMinimap = true;
     this.showStats = false;
     this.lastTime = performance.now();
+    this.hitstopT = 0;
     this.deco = [];
     this.endSummary = null;
     this.resize();
@@ -78,6 +100,15 @@ class Game {
         this.meta.resources = Object.assign(def.resources, data.resources || {});
         this.meta.upgrades = Object.assign(def.upgrades, data.upgrades || {});
         this.meta.priceMods = Object.assign(def.priceMods, data.priceMods || {});
+        // migrate pre-loadout saves; sanitize entries against current config
+        this.meta.loadout = Object.assign(def.loadout, data.loadout || {});
+        const lw = this.meta.loadout.weapons.filter((k) => WEAPONS[k]).slice(0, 3);
+        for (const k of ['pulse', 'shotgun', 'arc'])
+          if (lw.length < 3 && !lw.includes(k)) lw.push(k);
+        const ld = this.meta.loadout.devices.filter((k) => DEVICES[k]).slice(0, 4);
+        for (const k of ['turret', 'shield', 'scanner', 'mine'])
+          if (ld.length < 4 && !ld.includes(k)) ld.push(k);
+        this.meta.loadout = { weapons: lw, devices: ld };
       }
     } catch (e) {
       this.meta = defaultMeta();
@@ -134,6 +165,12 @@ class Game {
     this.resources = [];
     this.turrets = [];
     this.mines = [];
+    this.enemyGrid = new SpatialGrid(128);
+    this.damageNumbers = [];
+    this.drones = [];
+    this.decoys = [];
+    this.empPulse = null;
+    this.hitstopT = 0;
     this.scanPulse = null;
     this.scanRevealT = 0;
     this.arcBeam = null;
@@ -155,7 +192,18 @@ class Game {
       threat: 0,
       threatT: 90,
       spawnT: 5,
+      combo: 0,
+      comboT: 0,
+      comboMult: 1,
+      event: null,
+      eventT: rand(40, 70),
+      bossSpawned: false,
+      bossSlain: false,
+      bossT: 0,
+      bossKillT: 0,
     };
+    this.biome = pick(BIOMES);
+    this.boss = null;
 
     // outpost near center, offset
     const ox = WORLD_W / 2 + rand(-250, 250);
@@ -215,6 +263,26 @@ class Game {
         ok = dist(rx, ry, ox, oy) > 180;
       }
       this.resources.push(new ResourceNode(this, rx, ry, pick(types)));
+    }
+    // environmental hazards, weighted by the biome's bias
+    this.hazards = [];
+    const hpool = [];
+    for (const hk in this.biome.hazardBias) {
+      const n = Math.round(this.biome.hazardBias[hk] * 2);
+      for (let i = 0; i < n; i++) hpool.push(hk);
+    }
+    const nHaz = randInt(5, 8);
+    for (let i = 0; i < nHaz; i++) {
+      let hx2,
+        hy2,
+        ok2 = false,
+        tries2 = 0;
+      while (!ok2 && tries2++ < 50) {
+        hx2 = rand(150, WORLD_W - 150);
+        hy2 = rand(150, WORLD_H - 150);
+        ok2 = dist(hx2, hy2, ox, oy) > 350;
+      }
+      this.hazards.push(new Hazard(this, pick(hpool), hx2, hy2));
     }
     // starting enemies near hives
     for (const h of this.hives) {
@@ -308,6 +376,7 @@ class Game {
   }
   update(dt) {
     this.uiBlocksFire = this.state !== 'playing';
+    Music.sync(this); // adaptive soundtrack follows game state + threat
     for (const ts of this.toasts) ts.t -= dt;
     this.toasts = this.toasts.filter((ts) => ts.t > 0);
 
@@ -324,7 +393,42 @@ class Game {
         break;
     }
   }
-  updatePlaying(dt) {
+  explodeAoe(pr) {
+    pr.aoeDone = true;
+    const R = pr.aoe;
+    Sound.explosion();
+    this.camera.addShake(4);
+    burst(this, pr.x, pr.y, '#ffb04d', 18, 200, 4, 0.6);
+    burst(this, pr.x, pr.y, '#ff7a3d', 10, 130, 3, 0.5);
+    this.enemyGrid.queryCircle(pr.x, pr.y, R + 30, (e) => {
+      if (e.dead) return false;
+      const d = dist(pr.x, pr.y, e.x, e.y);
+      if (d < R + e.radius) {
+        e.takeDamage(pr.damage * (1 - (d / (R + e.radius)) * 0.5), pr.x, pr.y);
+        if (pr.status && !e.dead) applyStatus(e, pr.status);
+      }
+      return false;
+    });
+    for (const h of this.hives) {
+      if (!h.destroyed && dist(pr.x, pr.y, h.x, h.y) < R + h.radius)
+        h.takeDamage(pr.damage, pr.x, pr.y);
+    }
+    if (
+      this.boss &&
+      !this.boss.dead &&
+      dist(pr.x, pr.y, this.boss.x, this.boss.y) < R + this.boss.radius
+    )
+      this.boss.takeDamage(pr.damage, pr.x, pr.y);
+  }
+  hitstop(d) {
+    // brief global slow-mo on big hits; capped so mass kills never stall
+    this.hitstopT = Math.min(0.06, this.hitstopT + d);
+  }
+  updatePlaying(rdt) {
+    // decay hitstop with REAL dt (a scaled decay would freeze itself)
+    const dt = this.hitstopT > 0 ? rdt * 0.15 : rdt;
+    this.hitstopT = Math.max(0, this.hitstopT - rdt);
+    tickCombo(this.run, rdt); // combo decays in real time, even during hitstop
     const r = this.run,
       p = this.player;
     r.time += dt;
@@ -366,6 +470,35 @@ class Game {
     if (r.threatT <= 0) {
       r.threatT = 90;
       this.addThreat(1);
+    }
+    // weather events at elevated threat
+    if (!r.event) {
+      r.eventT -= dt;
+      if (r.eventT <= 0 && this.threatLevel() >= 3) {
+        r.event = { type: 'sporeStorm', t: 18, max: 18 };
+        this.toast('SPORE STORM — toxic clouds closing in!');
+        Sound.alarm();
+        for (let i = 0; i < 4; i++) {
+          const a = rand(0, TAU),
+            d = rand(250, 500);
+          this.hazards.push(
+            new Hazard(
+              this,
+              'sporeCloud',
+              clamp(p.x + Math.cos(a) * d, 100, WORLD_W - 100),
+              clamp(p.y + Math.sin(a) * d, 100, WORLD_H - 100),
+              18
+            )
+          );
+        }
+      }
+    } else {
+      r.event.t -= dt;
+      if (r.event.t <= 0) {
+        r.event = null;
+        r.eventT = rand(40, 70);
+        this.toast('The storm has passed');
+      }
     }
     // carrying rare resources raises threat slowly
     let rare = 0;
@@ -410,7 +543,14 @@ class Game {
         const d = rand(620, 900);
         const sx = clamp(p.x + Math.cos(a) * d, 30, WORLD_W - 30);
         const sy = clamp(p.y + Math.sin(a) * d, 30, WORLD_H - 30);
-        const e = new Enemy(this, pick(pool), sx, sy, 1 + Math.floor(tl / 2));
+        const e = new Enemy(
+          this,
+          pick(pool),
+          sx,
+          sy,
+          1 + Math.floor(tl / 2),
+          Math.random() < 0.04 + tl * 0.04 ? pick(['splitter', 'armored', 'frenzied']) : null
+        );
         e.aggro = true;
         this.enemies.push(e);
       }
@@ -422,34 +562,78 @@ class Game {
     if (this.mule) this.mule.update(dt);
     this.outpost.update(dt);
     for (const h of this.hives) h.update(dt);
+    // apex warden: spawns once at full threat or when every hive is down
+    if (!r.bossSpawned) {
+      const allHivesDead = this.hives.length > 0 && this.hives.every((h) => h.destroyed);
+      if (this.threatLevel() >= 5 || allHivesDead) {
+        r.bossSpawned = true;
+        r.bossT = r.time;
+        const ba = rand(0, TAU);
+        this.boss = new Boss(
+          this,
+          clamp(p.x + Math.cos(ba) * 700, 100, WORLD_W - 100),
+          clamp(p.y + Math.sin(ba) * 700, 100, WORLD_H - 100)
+        );
+        this.toast('WARNING: Apex Warden inbound!');
+        Sound.bossRoar();
+        this.camera.addShake(8);
+      }
+    }
+    if (this.boss && !this.boss.dead) this.boss.update(dt);
     for (const e of this.enemies) if (!e.dead) e.update(dt);
+    // rebuild spatial grid (used by projectiles, turrets, mines, AOE queries)
+    this.enemyGrid.clear();
+    for (const e of this.enemies) if (!e.dead) this.enemyGrid.insert(e);
     for (const t of this.turrets) if (!t.dead) t.update(dt);
     for (const m of this.mines) if (!m.dead) m.update(dt);
+    for (const d of this.drones) if (!d.dead) d.update(dt);
+    for (const dc of this.decoys) if (!dc.dead) dc.update(dt);
+    for (const hz of this.hazards) if (!hz.dead) hz.update(dt);
     for (const rs of this.resources) rs.update(dt);
 
     // projectiles
     for (const pr of this.projectiles) {
       pr.update(dt, this);
-      if (pr.dead) continue;
-      // vs enemies
-      for (const e of this.enemies) {
-        if (e.dead) continue;
-        if (dist2(pr.x, pr.y, e.x, e.y) < (e.radius + pr.radius) * (e.radius + pr.radius)) {
-          e.takeDamage(pr.damage, pr.prevX, pr.prevY);
-          pr.dead = true;
-          break;
+      if (!pr.dead) {
+        // vs enemies (spatial grid; pad by max enemy radius)
+        this.enemyGrid.queryCircle(pr.x, pr.y, pr.radius + 30, (e) => {
+          if (e.dead) return false;
+          if (pr.hitSet && pr.hitSet.has(e)) return false;
+          if (dist2(pr.x, pr.y, e.x, e.y) < (e.radius + pr.radius) * (e.radius + pr.radius)) {
+            e.takeDamage(pr.damage, pr.prevX, pr.prevY);
+            if (pr.status) applyStatus(e, pr.status);
+            if (pr.pierce) {
+              pr.hitSet.add(e);
+              return false; // railgun: keep flying through
+            }
+            pr.dead = true;
+            return true;
+          }
+          return false;
+        });
+      }
+      if (!pr.dead) {
+        // vs hives
+        for (const h of this.hives) {
+          if (h.destroyed) continue;
+          if (dist2(pr.x, pr.y, h.x, h.y) < (h.radius + pr.radius) * (h.radius + pr.radius)) {
+            h.takeDamage(pr.damage, pr.prevX, pr.prevY);
+            pr.dead = true;
+            break;
+          }
         }
       }
-      if (pr.dead) continue;
-      // vs hives
-      for (const h of this.hives) {
-        if (h.destroyed) continue;
-        if (dist2(pr.x, pr.y, h.x, h.y) < (h.radius + pr.radius) * (h.radius + pr.radius)) {
-          h.takeDamage(pr.damage, pr.prevX, pr.prevY);
-          pr.dead = true;
-          break;
+      if (!pr.dead && this.boss && !this.boss.dead) {
+        // vs boss
+        const b = this.boss;
+        if (dist2(pr.x, pr.y, b.x, b.y) < (b.radius + pr.radius) * (b.radius + pr.radius)) {
+          b.takeDamage(pr.damage, pr.prevX, pr.prevY);
+          if (pr.status) applyStatus(b, pr.status);
+          if (!pr.pierce) pr.dead = true;
         }
       }
+      // flak: detonate on impact or at end of range
+      if (pr.dead && pr.aoe && !pr.aoeDone) this.explodeAoe(pr);
     }
     for (const pr of this.enemyProjectiles) {
       pr.update(dt, this);
@@ -474,6 +658,11 @@ class Game {
       this.scanPulse.r += 700 * dt;
       if (this.scanPulse.r > this.scanPulse.max) this.scanPulse = null;
     }
+    // EMP shockwave ring
+    if (this.empPulse) {
+      this.empPulse.r += 900 * dt;
+      if (this.empPulse.r > this.empPulse.max) this.empPulse = null;
+    }
     this.scanRevealT = Math.max(0, this.scanRevealT - dt);
     if (this.arcBeam) {
       this.arcBeam.t -= dt;
@@ -482,12 +671,16 @@ class Game {
 
     // particles
     this.particles = this.particles.filter((pt) => pt.update(dt));
+    this.damageNumbers = this.damageNumbers.filter((dn) => dn.update(rdt));
     // cleanup
     this.projectiles = this.projectiles.filter((x) => !x.dead);
     this.enemyProjectiles = this.enemyProjectiles.filter((x) => !x.dead);
     this.enemies = this.enemies.filter((x) => !x.dead);
     this.turrets = this.turrets.filter((x) => !x.dead);
     this.mines = this.mines.filter((x) => !x.dead);
+    this.drones = this.drones.filter((x) => !x.dead);
+    this.decoys = this.decoys.filter((x) => !x.dead);
+    this.hazards = this.hazards.filter((x) => !x.dead);
     this.resources = this.resources.filter((x) => !x.dead);
 
     // mission
@@ -521,10 +714,10 @@ class Game {
       cam = this.camera,
       W = this.canvas.width,
       H = this.canvas.height;
-    // swamp background
+    // biome background
     const bg = ctx.createLinearGradient(0, 0, 0, H);
-    bg.addColorStop(0, '#0a1410');
-    bg.addColorStop(1, '#08100e');
+    bg.addColorStop(0, this.biome.bgTop);
+    bg.addColorStop(1, this.biome.bgBottom);
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, W, H);
     // grid
@@ -556,13 +749,13 @@ class Game {
       const p = Math.sin(t * 1.2 + d.ph) * 0.5 + 0.5;
       if (d.t === 0) {
         // glow puddle
-        ctx.fillStyle = 'rgba(40,180,140,' + (0.04 + p * 0.04) + ')';
+        ctx.fillStyle = this.biome.deco.puddle + (0.04 + p * 0.04) + ')';
         ctx.beginPath();
         ctx.ellipse(x, y, d.r * 1.4, d.r * 0.8, 0, 0, TAU);
         ctx.fill();
       } else if (d.t === 1) {
         // glow plant
-        ctx.strokeStyle = 'rgba(110,230,170,' + (0.18 + p * 0.2) + ')';
+        ctx.strokeStyle = this.biome.deco.plant + (0.18 + p * 0.2) + ')';
         ctx.lineWidth = 2;
         for (let i = 0; i < 4; i++) {
           const a = -Math.PI / 2 + (i - 1.5) * 0.4 + Math.sin(t + d.ph + i) * 0.1;
@@ -576,7 +769,7 @@ class Game {
           );
           ctx.stroke();
         }
-        ctx.fillStyle = 'rgba(150,255,200,' + (0.3 + p * 0.4) + ')';
+        ctx.fillStyle = this.biome.deco.tip + (0.3 + p * 0.4) + ')';
         ctx.beginPath();
         ctx.arc(x, y - d.r * 0.7, 2.5, 0, TAU);
         ctx.fill();
@@ -591,6 +784,8 @@ class Game {
         ctx.fill();
       }
     }
+    // hazard zones (under entities)
+    for (const hz of this.hazards) hz.draw(ctx, cam);
     // entities
     this.outpost.draw(ctx, cam);
     for (const m of this.mines) m.draw(ctx, cam);
@@ -599,7 +794,10 @@ class Game {
     for (const h of this.hives) h.draw(ctx, cam);
     if (this.mule) this.mule.draw(ctx, cam);
     for (const tr of this.turrets) tr.draw(ctx, cam);
+    for (const dc of this.decoys) dc.draw(ctx, cam);
+    for (const dr of this.drones) dr.draw(ctx, cam);
     for (const e of this.enemies) e.draw(ctx, cam);
+    if (this.boss) this.boss.draw(ctx, cam);
     if (!this.player.dead) this.player.draw(ctx, cam);
     for (const pr of this.projectiles) pr.draw(ctx, cam);
     for (const pr of this.enemyProjectiles) pr.draw(ctx, cam);
@@ -631,8 +829,26 @@ class Game {
       ctx.arc(cam.wx(this.scanPulse.x), cam.wy(this.scanPulse.y), this.scanPulse.r, 0, TAU);
       ctx.stroke();
     }
+    // EMP shockwave ring
+    if (this.empPulse) {
+      const a = 1 - this.empPulse.r / this.empPulse.max;
+      ctx.strokeStyle = 'rgba(110,139,255,' + a * 0.8 + ')';
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.arc(cam.wx(this.empPulse.x), cam.wy(this.empPulse.y), this.empPulse.r, 0, TAU);
+      ctx.stroke();
+    }
     // particles
     for (const pt of this.particles) pt.draw(ctx, cam);
+    // floating damage numbers
+    for (const dn of this.damageNumbers) dn.draw(ctx, cam);
+    // spore storm visibility veil (fades in/out with the event timer)
+    if (this.run.event && this.run.event.type === 'sporeStorm') {
+      const et = this.run.event.t;
+      const a = Math.min(0.38, Math.min(et, this.run.event.max - et) * 0.2);
+      ctx.fillStyle = 'rgba(120,80,170,' + Math.max(0, a) + ')';
+      ctx.fillRect(0, 0, W, H);
+    }
     // evac indicator
     if (this.evacuating) {
       const p = this.player;
@@ -726,7 +942,7 @@ class Game {
     ctx.strokeRect(14, y, bw, 40);
     ctx.fillStyle = def.color;
     ctx.font = 'bold 12px monospace';
-    ctx.fillText('[' + def.slot + '] ' + def.name, 20, y + 16);
+    ctx.fillText('[' + (p.slots.indexOf(p.weaponKey) + 1) + '] ' + def.name, 20, y + 16);
     ctx.fillStyle = '#dff6ff';
     ctx.font = '11px monospace';
     if (def.useHeat) {
@@ -741,15 +957,11 @@ class Game {
     }
     y += 48;
 
-    // devices
-    const devs = [
-      ['Q', 'Turret', p.dev.turret, 25],
-      ['F', 'Shield', p.dev.shield, 18],
-      ['C', 'Scan', p.dev.scanner, 12],
-      ['X', 'Mine', p.dev.mine, 10],
-    ];
+    // devices (from the equipped loadout)
+    const devKeyLabels = ['Q', 'F', 'C', 'X'];
+    const devs = p.deviceSlots.map((k, i) => [devKeyLabels[i], DEVICES[k].name, p.dev[k]]);
     let dx = 14;
-    for (const [key, name, cd, max] of devs) {
+    for (const [key, name, cd] of devs) {
       const ready = cd <= 0;
       ctx.fillStyle = ready ? 'rgba(20,46,40,0.85)' : 'rgba(8,16,20,0.75)';
       ctx.fillRect(dx, y, 44, 34);
@@ -833,6 +1045,37 @@ class Game {
       W / 2,
       61
     );
+    // boss healthbar (below the mission banner)
+    if (this.boss && !this.boss.dead) {
+      const bw2 = Math.min(520, W * 0.5);
+      ctx.fillStyle = 'rgba(8,16,20,0.75)';
+      ctx.fillRect(W / 2 - bw2 / 2, 74, bw2, 16);
+      ctx.fillStyle = '#b02040';
+      ctx.fillRect(
+        W / 2 - bw2 / 2 + 1,
+        75,
+        (bw2 - 2) * clamp(this.boss.hp / this.boss.maxHp, 0, 1),
+        14
+      );
+      ctx.strokeStyle = 'rgba(255,125,160,0.5)';
+      ctx.strokeRect(W / 2 - bw2 / 2, 74, bw2, 16);
+      ctx.fillStyle = '#ffd9e6';
+      ctx.font = 'bold 10px monospace';
+      ctx.fillText('APEX WARDEN', W / 2, 85);
+    }
+    // combo multiplier (right of the mission banner)
+    if (r.combo >= 2) {
+      const cxx = W / 2 + mw / 2 + 78;
+      ctx.fillStyle = r.comboMult >= 2 ? '#ffd35d' : '#aef5dc';
+      ctx.font = 'bold 16px monospace';
+      ctx.fillText('x' + r.comboMult.toFixed(1), cxx, 30);
+      ctx.font = '10px monospace';
+      ctx.fillText('COMBO ' + r.combo, cxx, 44);
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(cxx - 30, 50, 60, 4);
+      ctx.fillStyle = '#aef5dc';
+      ctx.fillRect(cxx - 30, 50, 60 * clamp(r.comboT / 4, 0, 1), 4);
+    }
     ctx.textAlign = 'left';
 
     // toasts
@@ -1064,6 +1307,58 @@ class Game {
         ctx.fillText('MAXED', x + 10, y + 52);
       }
     });
+
+    // loadout (weapons on 1/2/3, devices on Q/F/C/X — click to cycle)
+    const loy = 172 + Math.ceil(Object.keys(UPGRADES).length / 2) * 78 + 14;
+    ctx.fillStyle = '#dff6ff';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText('LOADOUT', 40, loy);
+    ctx.fillStyle = '#9fb6c4';
+    ctx.font = '11px monospace';
+    ctx.fillText('click to cycle', 130, loy);
+    const lo = m.loadout;
+    for (let i = 0; i < 3; i++) {
+      const wi = i; // capture
+      this.button(
+        40 + i * 152,
+        loy + 10,
+        142,
+        26,
+        '[' + (i + 1) + '] ' + WEAPONS[lo.weapons[i]].name,
+        () => {
+          lo.weapons[wi] = cycleChoice(
+            WEAPON_CHOICES,
+            lo.weapons[wi],
+            1,
+            lo.weapons.filter((_, j) => j !== wi)
+          );
+          this.save();
+        },
+        true,
+        WEAPONS[lo.weapons[i]].color
+      );
+    }
+    const devLabels = ['Q', 'F', 'C', 'X'];
+    for (let i = 0; i < 4; i++) {
+      const di = i; // capture
+      this.button(
+        40 + i * 152,
+        loy + 42,
+        142,
+        26,
+        devLabels[i] + ': ' + DEVICES[lo.devices[i]].name,
+        () => {
+          lo.devices[di] = cycleChoice(
+            DEVICE_CHOICES,
+            lo.devices[di],
+            1,
+            lo.devices.filter((_, j) => j !== di)
+          );
+          this.save();
+        },
+        true
+      );
+    }
 
     // start button
     this.button(

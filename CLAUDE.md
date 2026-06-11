@@ -5,9 +5,10 @@ Context for working in this repository. Read this first.
 ## What this is
 
 **ExoSwarm Salvage** is a top-down sci-fi survival roguelite shooter built with **vanilla
-JavaScript + the Canvas 2D API**. No game engine, no frameworks, no external assets. All sound is
-synthesized at runtime with the Web Audio API; all graphics are drawn with Canvas 2D primitives.
-The only dependencies are dev tooling (Vite, ESLint, Prettier).
+JavaScript + the Canvas 2D API**. No game engine, no frameworks, no external assets. All graphics
+are drawn with Canvas 2D primitives; all sound is synthesized at runtime — richer SFX and the
+adaptive soundtrack go through **Tone.js** (the single sanctioned runtime dependency), with a raw
+Web Audio fallback when Tone is unavailable. Dev tooling: Vite, ESLint, Prettier, Vitest.
 
 The game was originally a single ~2500-line `main.js`. It has since been split into ES modules
 under `src/`. **All user-facing text is in English.** Keep it that way — do not introduce other
@@ -22,10 +23,11 @@ npm run build      # minified production build into dist/
 npm run preview    # serve the production build locally
 npm run lint       # ESLint (flat config) over src/
 npm run format     # Prettier over the repo
+npm run test       # Vitest unit tests for pure logic (spatial grid, combo, status math)
 ```
 
-The game also runs by simply opening `index.html` in a browser — it is pure static content. There
-is no test suite; verify changes by running the game and playing it.
+Gameplay, rendering, and audio are verified by running the game and playing it (`npm run dev`);
+the Vitest suite covers only pure-logic modules.
 
 ## Architecture
 
@@ -41,26 +43,42 @@ src/
 ├── game.js                # Game class: main loop, states, world spawning, rendering, HUD, save/load
 ├── core/
 │   ├── utils.js           # math/helpers: TAU, clamp, lerp, rand, randInt, dist, dist2, angleTo, angleDiff, pick, fmtTime
-│   ├── audio.js           # Sound: Web Audio API synth (blips, noise, named SFX)
+│   ├── audio.js           # Sound facade: routes to the Tone.js engine, raw Web Audio fallback
 │   ├── input.js           # Input: keyboard + mouse state singleton
 │   └── camera.js          # Camera: follow + screen shake, world<->screen transforms
 ├── config/
-│   └── data.js            # static config: WORLD_W/H, RESOURCE_TYPES, WEAPONS, ENEMY_TYPES, UPGRADES, MISSIONS
+│   ├── data.js            # static config: WORLD_W/H, RESOURCE_TYPES, WEAPONS, ENEMY_TYPES,
+│   │                      #   UPGRADES, MISSIONS, STATUS, DEVICES, HAZARDS, BIOMES
+│   └── loadouts.js        # station loadout choices + duplicate-free cycling helper
 ├── entities/
 │   ├── particles.js       # Particle class + burst() helper
-│   ├── projectile.js      # Projectile class
-│   ├── player.js          # Player: movement, weapons, devices, pickups, interaction
-│   ├── enemy.js           # Enemy: AI for melee/ranged/charger/warden kinds
-│   └── hive.js            # Hive: spawns enemies, grows over time, has a weak point
+│   ├── projectile.js      # Projectile class (opts: pierce / aoe / status)
+│   ├── damageNumber.js    # floating combat text (capped, off-screen culled)
+│   ├── player.js          # Player: movement, loadout weapons, generic device dispatch
+│   ├── enemy.js           # Enemy: melee/ranged/charger/warden AI + elite variants + statuses
+│   ├── hive.js            # Hive: spawns enemies, grows over time, has a weak point
+│   └── boss.js            # Apex Warden: phased boss, telegraphed attacks, weak point
 ├── world/
 │   ├── resource.js        # ResourceNode: collectible salvage (light = auto-magnet, heavy = needs Mule)
 │   ├── mule.js            # Mule: Mule-3 cargo hauler that follows the player
 │   ├── outpost.js         # Outpost: cargo pad, reactor, repair, evac point
 │   ├── turret.js          # Turret: deployable + outpost auto-turret
-│   └── mine.js            # Mine: deployable proximity explosive
+│   ├── mine.js            # Mine: deployable proximity explosive
+│   ├── drone.js           # Drone device: orbits the player, auto-fires
+│   ├── decoy.js           # Decoy device: holographic aggro magnet
+│   └── hazard.js          # Hazard zones: spore cloud / acid pool / ember vent
 └── systems/
-    └── mission.js         # Mission: objective tracking + bonus conditions
+    ├── mission.js         # Mission: objective tracking + bonus conditions
+    ├── spatialGrid.js     # uniform grid for collision/AOE/targeting queries
+    ├── audioEngine.js     # Tone.js SFX engine (lazy-loaded, pooled voices)
+    ├── music.js           # adaptive Transport-driven soundtrack (run/boss/station)
+    ├── status.js          # burn/freeze/corrode/stun status effects
+    └── combo.js           # kill-combo score multiplier (pure math)
 ```
+
+Per-frame flow gotchas: `game.enemyGrid` is rebuilt in `updatePlaying` right after enemy updates —
+turrets/mines/drones/hazards/projectiles query it afterwards, so keep that ordering. Hitstop scales
+the gameplay `dt` but decays on real time (`rdt`), and the combo timer also ticks on real time.
 
 ### Module dependency rules
 
@@ -115,8 +133,13 @@ crash `JSON.parse`/load.
 
 - Plain JS, **not** TypeScript. 2-space indent, single quotes, semicolons (enforced by Prettier;
   config in `.prettierrc.json`).
-- Keep the zero-runtime-dependency property: no game libraries, no asset files. Procedural
-  audio/graphics only.
+- **Tone.js is the only sanctioned runtime dependency** (audio synthesis + adaptive music). Do not
+  add other runtime libraries, and never add asset files (no images, no audio samples) — graphics
+  stay procedural Canvas 2D, audio stays synthesized. The audio stack: `core/audio.js` is the
+  API-stable `Sound` facade (raw Web Audio fallback); `systems/audioEngine.js` lazy-loads Tone on
+  the first user gesture (`Tone.start()` must run inside a gesture handler) and pools PolySynth
+  voices (never allocate synths per shot); `systems/music.js` runs Transport-driven layered music
+  gated by game state/threat. A failed Tone init must degrade to silence/fallback — never throw.
 - Coordinates are world-space; convert with `cam.wx/wy` (world→screen) and `cam.toWorldX/Y`
   (screen→world) when drawing or reading the mouse.
 - `dt` is seconds. Avoid frame-rate-dependent constants; scale by `dt`.

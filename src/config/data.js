@@ -64,6 +64,7 @@ const WEAPONS = {
     pellets: 7,
     color: '#ffb04d',
     useHeat: false,
+    range: 320,
   },
   arc: {
     key: 'arc',
@@ -80,6 +81,51 @@ const WEAPONS = {
     color: '#6e8bff',
     useHeat: true,
   },
+  railgun: {
+    key: 'railgun',
+    name: 'Railgun',
+    slot: 4,
+    damage: 60,
+    fireRate: 1.1,
+    magSize: 4,
+    reloadTime: 2.2,
+    projSpeed: 1500,
+    projRadius: 4,
+    spread: 0.005,
+    pellets: 1,
+    color: '#d07aff',
+    useHeat: false,
+    pierce: true,
+    range: 900,
+  },
+  flak: {
+    key: 'flak',
+    name: 'Flak Launcher',
+    slot: 5,
+    damage: 26,
+    fireRate: 1.5,
+    magSize: 5,
+    reloadTime: 2.0,
+    projSpeed: 430,
+    projRadius: 5,
+    spread: 0.06,
+    pellets: 1,
+    color: '#ffb04d',
+    useHeat: false,
+    aoe: 90,
+    status: 'burn',
+    range: 460,
+  },
+};
+
+const DEVICES = {
+  turret: { key: 'turret', name: 'Turret', cd: 25 },
+  shield: { key: 'shield', name: 'Shield', cd: 18 },
+  scanner: { key: 'scanner', name: 'Scan', cd: 12 },
+  mine: { key: 'mine', name: 'Mine', cd: 10 },
+  drone: { key: 'drone', name: 'Drone', cd: 30, dur: 18 },
+  decoy: { key: 'decoy', name: 'Decoy', cd: 22, dur: 6 },
+  emp: { key: 'emp', name: 'EMP', cd: 16, radius: 240 },
 };
 
 const ENEMY_TYPES = {
@@ -212,6 +258,83 @@ const MISSIONS = {
     brief: 'Activate the reactor, deliver 60 cr and hold for 90s.',
     bonusBrief: 'Bonus: Mule-3 must survive.',
   },
+  apexHunt: {
+    key: 'apexHunt',
+    name: 'Apex Hunt',
+    brief: 'Lure out and slay the Apex Warden.',
+    bonusBrief: 'Bonus: kill it within 90s of its arrival.',
+  },
 };
 
-export { WORLD_W, WORLD_H, RESOURCE_TYPES, WEAPONS, ENEMY_TYPES, UPGRADES, MISSIONS };
+const HAZARDS = {
+  sporeCloud: {
+    name: 'Spore Cloud',
+    radius: 95,
+    color: 'rgba(176,107,255,0.16)',
+    edge: 'rgba(176,107,255,0.4)',
+    status: 'corrode',
+  },
+  acidPool: {
+    name: 'Acid Pool',
+    radius: 70,
+    color: 'rgba(157,255,93,0.14)',
+    edge: 'rgba(157,255,93,0.45)',
+    status: 'burn',
+  },
+  emberVent: {
+    name: 'Ember Vent',
+    radius: 55,
+    color: 'rgba(255,154,61,0.15)',
+    edge: 'rgba(255,154,61,0.5)',
+    interval: 2.5,
+    damage: 16,
+  },
+};
+
+const BIOMES = [
+  {
+    key: 'fen',
+    name: 'Morrow Fen',
+    bgTop: '#0a1410',
+    bgBottom: '#08100e',
+    deco: { puddle: 'rgba(40,180,140,', plant: 'rgba(110,230,170,', tip: 'rgba(150,255,200,' },
+    hazardBias: { sporeCloud: 2, acidPool: 1, emberVent: 0.5 },
+  },
+  {
+    key: 'ashen',
+    name: 'Ashen Reach',
+    bgTop: '#120c08',
+    bgBottom: '#0d0906',
+    deco: { puddle: 'rgba(200,120,40,', plant: 'rgba(230,150,90,', tip: 'rgba(255,200,150,' },
+    hazardBias: { sporeCloud: 0.5, acidPool: 0.5, emberVent: 2.5 },
+  },
+  {
+    key: 'mire',
+    name: 'Violet Mire',
+    bgTop: '#0c0814',
+    bgBottom: '#08060e',
+    deco: { puddle: 'rgba(140,80,200,', plant: 'rgba(180,120,255,', tip: 'rgba(220,180,255,' },
+    hazardBias: { sporeCloud: 2.5, acidPool: 1.5, emberVent: 0.3 },
+  },
+];
+
+const STATUS = {
+  burn: { dps: 9, dur: 3, tick: 0.5, color: '#ff9a3d' },
+  freeze: { slow: 0.45, dur: 2.2, color: '#9adfff' },
+  corrode: { armorShred: 0.6, dur: 4, color: '#b6ff5d' },
+  stun: { slow: 0.05, dur: 1.4, color: '#7af5ff' },
+};
+
+export {
+  WORLD_W,
+  WORLD_H,
+  RESOURCE_TYPES,
+  WEAPONS,
+  ENEMY_TYPES,
+  UPGRADES,
+  MISSIONS,
+  STATUS,
+  DEVICES,
+  HAZARDS,
+  BIOMES,
+};

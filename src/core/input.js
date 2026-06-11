@@ -1,4 +1,5 @@
 import { Sound } from './audio.js';
+import { AudioEngine } from '../systems/audioEngine.js';
 
 /* ============================== INPUT =================================== */
 const Input = {
@@ -15,6 +16,7 @@ const Input = {
       if (!this.keys[k]) this.pressed[k] = true;
       this.keys[k] = true;
       Sound.init();
+      AudioEngine.init(); // Tone.start() must run inside a user gesture
     });
     window.addEventListener('keyup', (e) => {
       const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -31,6 +33,7 @@ const Input = {
         this.mouseClicked = true;
       }
       Sound.init();
+      AudioEngine.init();
     });
     window.addEventListener('mouseup', (e) => {
       if (e.button === 0) this.mouseDown = false;

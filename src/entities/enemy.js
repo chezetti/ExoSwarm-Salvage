@@ -4,10 +4,13 @@ import { WORLD_W, WORLD_H, ENEMY_TYPES } from '../config/data.js';
 import { burst } from './particles.js';
 import { Projectile } from './projectile.js';
 import { ResourceNode } from '../world/resource.js';
+import { spawnDamageNumber } from './damageNumber.js';
+import { registerKill } from '../systems/combo.js';
+import { tickStatuses } from '../systems/status.js';
 
 /* =============================== ENEMY ================================== */
 class Enemy {
-  constructor(game, type, x, y, level) {
+  constructor(game, type, x, y, level, elite) {
     this.game = game;
     this.typeKey = type;
     const t = ENEMY_TYPES[type];
@@ -17,6 +20,17 @@ class Enemy {
     this.hp = this.maxHp;
     this.speed = t.speed * (1 + 0.06 * ((level || 1) - 1));
     this.damage = t.damage * lvlMult;
+    // elite variants: tougher + a twist (splitter/armored/frenzied)
+    this.elite = elite || null;
+    if (this.elite) {
+      this.maxHp *= 2.2;
+      this.hp = this.maxHp;
+      if (this.elite === 'frenzied') {
+        this.speed *= 1.45;
+        this.damage *= 1.3;
+      }
+      if (this.elite === 'armored') this.eliteArmor = 0.35;
+    }
     this.x = x;
     this.y = y;
     this.radius = t.radius;
@@ -34,10 +48,30 @@ class Enemy {
     this.aggro = false;
     this.wanderA = rand(0, TAU);
     this.wanderT = rand(0.5, 2);
+    this.statuses = {};
+    this.speedMult = 1;
+    this.armorShred = 0;
   }
   pickTarget() {
     const g = this.game,
       p = g.player;
+    // active decoys grab attention first
+    if (g.decoys && g.decoys.length) {
+      let best = null,
+        bdc = Infinity;
+      for (const dc of g.decoys) {
+        if (dc.dead) continue;
+        const d = dist(this.x, this.y, dc.x, dc.y);
+        if (d < 520 && d < bdc) {
+          bdc = d;
+          best = dc;
+        }
+      }
+      if (best && Math.random() < 0.85) {
+        this.target = { x: best.x, y: best.y, type: 'decoy', ref: best };
+        return;
+      }
+    }
     let tx = p.x,
       ty = p.y,
       tt = 'player';
@@ -72,6 +106,8 @@ class Enemy {
     if (!this.target) return null;
     if (this.target.type === 'mule') return g.mule;
     if (this.target.type === 'outpost') return g.outpost;
+    if (this.target.type === 'decoy')
+      return this.target.ref && !this.target.ref.dead ? this.target.ref : g.player;
     return g.player;
   }
   update(dt) {
@@ -80,6 +116,9 @@ class Enemy {
     this.hitFlash = Math.max(0, this.hitFlash - dt * 5);
     this.attackT -= dt;
     this.wobble += dt * 6;
+    tickStatuses(this, dt, g);
+    if (this.dead) return; // burn tick can kill mid-update
+    const sp = sp * this.speedMult;
     // Aggro / leash: idle enemies guard their spawn area until the player
     // (or mule) comes close, they take damage, or global threat is high.
     if (!this.aggro) {
@@ -96,8 +135,8 @@ class Enemy {
           this.wanderA = dh > 160 ? angleTo(this.x, this.y, this.homeX, this.homeY) : rand(0, TAU);
         }
         this.facing = this.wanderA;
-        this.x += Math.cos(this.wanderA) * this.speed * 0.35 * dt;
-        this.y += Math.sin(this.wanderA) * this.speed * 0.35 * dt;
+        this.x += Math.cos(this.wanderA) * sp * 0.35 * dt;
+        this.y += Math.sin(this.wanderA) * sp * 0.35 * dt;
         this.x = clamp(this.x, 20, WORLD_W - 20);
         this.y = clamp(this.y, 20, WORLD_H - 20);
         return;
@@ -122,25 +161,23 @@ class Enemy {
         const orbit = Math.sin(this.wobble) * 0.5;
         const a = aimA + (d < 120 ? orbit : 0);
         if (d > this.def.range + (te ? te.radius || 14 : 14)) {
-          this.x += Math.cos(a) * this.speed * dt;
-          this.y += Math.sin(a) * this.speed * dt;
+          this.x += Math.cos(a) * sp * dt;
+          this.y += Math.sin(a) * sp * dt;
         } else this.tryMelee(te);
         break;
       }
       case 'ranged': {
         const ideal = 210;
         if (d > ideal + 40) {
-          this.x += Math.cos(aimA) * this.speed * dt;
-          this.y += Math.sin(aimA) * this.speed * dt;
+          this.x += Math.cos(aimA) * sp * dt;
+          this.y += Math.sin(aimA) * sp * dt;
         } else if (d < 140) {
-          this.x -= Math.cos(aimA) * this.speed * 1.1 * dt;
-          this.y -= Math.sin(aimA) * this.speed * 1.1 * dt;
+          this.x -= Math.cos(aimA) * sp * 1.1 * dt;
+          this.y -= Math.sin(aimA) * sp * 1.1 * dt;
         } else {
           // strafe
-          this.x +=
-            Math.cos(aimA + Math.PI / 2) * Math.sin(this.wobble * 0.7) * this.speed * 0.5 * dt;
-          this.y +=
-            Math.sin(aimA + Math.PI / 2) * Math.sin(this.wobble * 0.7) * this.speed * 0.5 * dt;
+          this.x += Math.cos(aimA + Math.PI / 2) * Math.sin(this.wobble * 0.7) * sp * 0.5 * dt;
+          this.y += Math.sin(aimA + Math.PI / 2) * Math.sin(this.wobble * 0.7) * sp * 0.5 * dt;
         }
         if (d < this.def.range && this.attackT <= 0) {
           this.attackT = this.def.attackCd;
@@ -165,8 +202,8 @@ class Enemy {
         this.chargeT -= dt;
         if (this.charging > 0) {
           this.charging -= dt;
-          this.x += Math.cos(this.facing) * this.speed * 3.4 * dt;
-          this.y += Math.sin(this.facing) * this.speed * 3.4 * dt;
+          this.x += Math.cos(this.facing) * sp * 3.4 * dt;
+          this.y += Math.sin(this.facing) * sp * 3.4 * dt;
           if (d < this.radius + 18) {
             this.tryMelee(te, 1.4);
             this.charging = 0;
@@ -177,16 +214,16 @@ class Enemy {
             this.chargeT = rand(3.5, 5);
             Sound.blip(120, 0.25, 'sawtooth', 0.3, 60);
           } else if (d > this.def.range + 14) {
-            this.x += Math.cos(aimA) * this.speed * dt;
-            this.y += Math.sin(aimA) * this.speed * dt;
+            this.x += Math.cos(aimA) * sp * dt;
+            this.y += Math.sin(aimA) * sp * dt;
           } else this.tryMelee(te);
         }
         break;
       }
       case 'warden': {
         if (d > this.def.range + 14) {
-          this.x += Math.cos(aimA) * this.speed * dt;
-          this.y += Math.sin(aimA) * this.speed * dt;
+          this.x += Math.cos(aimA) * sp * dt;
+          this.y += Math.sin(aimA) * sp * dt;
         } else this.tryMelee(te);
         // shield aura for small allies
         for (const e of g.enemies) {
@@ -225,19 +262,29 @@ class Enemy {
   takeDamage(dmg, fromX, fromY, src) {
     if (this.dead) return;
     if (this.shielded) dmg *= 0.7;
+    if (this.eliteArmor) dmg *= 1 - this.eliteArmor * (1 - (this.armorShred || 0));
     if (this.def.armor) {
-      // frontal armor: shots arriving against facing reduced
+      // frontal armor: shots arriving against facing reduced; corrode shreds it
+      const armor = this.def.armor * (1 - (this.armorShred || 0));
       if (fromX !== undefined) {
         const hitA = angleTo(this.x, this.y, fromX, fromY);
         const ad = Math.abs(angleDiff(this.facing, hitA));
-        if (ad < 1.0) dmg *= 1 - this.def.armor;
-        else dmg *= 1 - this.def.armor * 0.4;
-      } else dmg *= 1 - this.def.armor * 0.5;
+        if (ad < 1.0) dmg *= 1 - armor;
+        else dmg *= 1 - armor * 0.4;
+      } else dmg *= 1 - armor * 0.5;
     }
     this.hp -= dmg;
     this.aggro = true;
     this.hitFlash = 1;
-    Sound.hit();
+    if (src !== 'status') Sound.hit();
+    spawnDamageNumber(
+      this.game,
+      this.x,
+      this.y - this.radius - 4,
+      Math.max(1, Math.round(dmg)),
+      src === 'status' ? '#ffb04d' : '#ffe9a8',
+      dmg >= 40
+    );
     burst(this.game, this.x, this.y, this.def.color, 3, 70, 2.5, 0.3);
     if (this.hp <= 0) this.die();
   }
@@ -246,11 +293,32 @@ class Enemy {
     this.dead = true;
     const g = this.game;
     g.run.kills++;
-    g.run.score += this.def.score;
+    registerKill(g.run);
+    g.run.score += Math.round(this.def.score * (this.elite ? 3 : 1) * g.run.comboMult);
+    g.hitstop(
+      this.elite || this.def.kind === 'charger' || this.def.kind === 'warden' ? 0.05 : 0.018
+    );
     Sound.enemyDie();
     burst(g, this.x, this.y, this.def.color, 14, 150, 4, 0.7);
-    // small loot chance
-    if (Math.random() < 0.1) {
+    if (this.elite === 'splitter') {
+      // splitter elites burst into fresh skitterlings
+      for (let i = 0; i < 2; i++) {
+        if (g.enemies.length >= 70) break;
+        const sa = rand(0, TAU);
+        const spawn = new Enemy(
+          g,
+          'skitterling',
+          this.x + Math.cos(sa) * 18,
+          this.y + Math.sin(sa) * 18,
+          1
+        );
+        spawn.aggro = true;
+        g.enemies.push(spawn);
+      }
+      burst(g, this.x, this.y, '#ffd35d', 10, 120, 3, 0.5);
+    }
+    // small loot chance (elites drop generously)
+    if (Math.random() < (this.elite ? 0.5 : 0.1)) {
       g.resources.push(
         new ResourceNode(
           g,
@@ -366,8 +434,23 @@ class Enemy {
       }
     }
     ctx.restore();
+    // elite glow ring
+    if (this.elite) {
+      ctx.strokeStyle = 'rgba(255,211,93,' + (0.45 + Math.sin(this.wobble) * 0.2) + ')';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, this.radius + 6, 0, TAU);
+      ctx.stroke();
+    }
     if (flash) {
       ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.beginPath();
+      ctx.arc(x, y, this.radius + 2, 0, TAU);
+      ctx.fill();
+    }
+    // frozen / stunned tint
+    if (this.statuses && (this.statuses.freeze || this.statuses.stun)) {
+      ctx.fillStyle = 'rgba(154,223,255,0.28)';
       ctx.beginPath();
       ctx.arc(x, y, this.radius + 2, 0, TAU);
       ctx.fill();
@@ -379,6 +462,13 @@ class Enemy {
       ctx.fillRect(x - w / 2, y - this.radius - 9, w, 4);
       ctx.fillStyle = this.shielded ? '#ff7da0' : '#ff5d4d';
       ctx.fillRect(x - w / 2, y - this.radius - 9, w * clamp(this.hp / this.maxHp, 0, 1), 4);
+    }
+    // status pips above the hp bar
+    let px = x - this.radius;
+    for (const k in this.statuses) {
+      ctx.fillStyle = this.statuses[k].def.color;
+      ctx.fillRect(px, y - this.radius - 16, 5, 5);
+      px += 7;
     }
   }
 }
