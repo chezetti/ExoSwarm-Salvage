@@ -118,7 +118,7 @@ class Enemy {
     this.wobble += dt * 6;
     tickStatuses(this, dt, g);
     if (this.dead) return; // burn tick can kill mid-update
-    const sp = sp * this.speedMult;
+    const sp = this.speed * this.speedMult;
     // Aggro / leash: idle enemies guard their spawn area until the player
     // (or mule) comes close, they take damage, or global threat is high.
     if (!this.aggro) {
