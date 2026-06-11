@@ -1,0 +1,1183 @@
+import { TAU, clamp, rand, randInt, dist, dist2, pick, fmtTime } from './core/utils.js';
+import { Sound } from './core/audio.js';
+import { Input } from './core/input.js';
+import { Camera } from './core/camera.js';
+import { WORLD_W, WORLD_H, RESOURCE_TYPES, UPGRADES, MISSIONS } from './config/data.js';
+import { Player } from './entities/player.js';
+import { Enemy } from './entities/enemy.js';
+import { Hive } from './entities/hive.js';
+import { ResourceNode } from './world/resource.js';
+import { Mule } from './world/mule.js';
+import { Outpost } from './world/outpost.js';
+import { Mission } from './systems/mission.js';
+
+/* ================================ GAME ================================== */
+const SAVE_KEY = 'exoswarm_salvage_save_v1';
+
+function defaultMeta() {
+  return {
+    credits: 0,
+    resources: { bioResin: 0, sporeFiber: 0, salvageChips: 0, softQuartz: 0, hiveEnzymes: 0 },
+    upgrades: {
+      cloneHealth: 0,
+      rifleDamage: 0,
+      cargoHarness: 0,
+      muleArmor: 0,
+      deviceCooling: 0,
+      marketContacts: 0,
+      signalArray: 0,
+      hydroponicsTray: 0,
+    },
+    unlockedWeapons: ['pulse', 'shotgun', 'arc'],
+    runCount: 0,
+    bestScore: 0,
+    totalKills: 0,
+    totalHives: 0,
+    priceMods: { bioResin: 1, sporeFiber: 1, salvageChips: 1, softQuartz: 1, hiveEnzymes: 1 },
+  };
+}
+
+class Game {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.camera = new Camera();
+    this.state = 'station'; // station | playing | paused | death | victory
+    this.meta = defaultMeta();
+    this.load();
+    this.toasts = [];
+    this.uiButtons = [];
+    this.uiBlocksFire = false;
+    this.showMinimap = true;
+    this.showStats = false;
+    this.lastTime = performance.now();
+    this.deco = [];
+    this.endSummary = null;
+    this.resize();
+    window.addEventListener('resize', () => this.resize());
+    Input.init(canvas);
+    requestAnimationFrame((t) => this.loop(t));
+  }
+  resize() {
+    this.canvas.width = window.innerWidth;
+    this.canvas.height = window.innerHeight;
+  }
+  /* ------------------------------ SAVE / LOAD --------------------------- */
+  save() {
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify(this.meta));
+    } catch (e) {}
+  }
+  load() {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      if (raw) {
+        const data = JSON.parse(raw);
+        const def = defaultMeta();
+        this.meta = Object.assign(def, data);
+        this.meta.resources = Object.assign(def.resources, data.resources || {});
+        this.meta.upgrades = Object.assign(def.upgrades, data.upgrades || {});
+        this.meta.priceMods = Object.assign(def.priceMods, data.priceMods || {});
+      }
+    } catch (e) {
+      this.meta = defaultMeta();
+    }
+  }
+  /* ------------------------------ ECONOMY ------------------------------- */
+  sellPrice(type) {
+    const base = RESOURCE_TYPES[type].price * this.meta.priceMods[type];
+    const mult = 1 + 0.1 * this.meta.upgrades.marketContacts;
+    return Math.round(base * mult);
+  }
+  rerollPrices() {
+    for (const k in this.meta.priceMods) {
+      let m = this.meta.priceMods[k] + rand(-0.12, 0.12);
+      this.meta.priceMods[k] = clamp(m, 0.8, 1.25);
+    }
+  }
+  upgradeCost(key) {
+    const def = UPGRADES[key];
+    const lvl = this.meta.upgrades[key];
+    const scale = Math.pow(1.5, lvl);
+    const cost = { credits: Math.round(def.credits * scale), res: {} };
+    for (const r in def.res) cost.res[r] = Math.ceil(def.res[r] * scale);
+    return cost;
+  }
+  canBuy(key) {
+    const def = UPGRADES[key];
+    if (this.meta.upgrades[key] >= def.max) return false;
+    const c = this.upgradeCost(key);
+    if (this.meta.credits < c.credits) return false;
+    for (const r in c.res) if (this.meta.resources[r] < c.res[r]) return false;
+    return true;
+  }
+  buyUpgrade(key) {
+    if (!this.canBuy(key)) {
+      Sound.hurt();
+      return;
+    }
+    const c = this.upgradeCost(key);
+    this.meta.credits -= c.credits;
+    for (const r in c.res) this.meta.resources[r] -= c.res[r];
+    this.meta.upgrades[key]++;
+    this.save();
+    Sound.deliver();
+  }
+  /* ------------------------------ RUN SETUP ----------------------------- */
+  startRun() {
+    this.state = 'playing';
+    this.particles = [];
+    this.projectiles = [];
+    this.enemyProjectiles = [];
+    this.enemies = [];
+    this.hives = [];
+    this.resources = [];
+    this.turrets = [];
+    this.mines = [];
+    this.scanPulse = null;
+    this.scanRevealT = 0;
+    this.arcBeam = null;
+    this.toasts = [];
+    this.evacT = 0;
+    this.evacuating = false;
+
+    this.run = {
+      time: 0,
+      kills: 0,
+      score: 0,
+      deliveredValue: 0,
+      delivered: {},
+      hivesDestroyed: 0,
+      maxHiveLevelKilled: 0,
+      reactorActivated: false,
+      reactorTimer: 0,
+      muleLost: false,
+      threat: 0,
+      threatT: 90,
+      spawnT: 5,
+    };
+
+    // outpost near center, offset
+    const ox = WORLD_W / 2 + rand(-250, 250);
+    const oy = WORLD_H / 2 + rand(-250, 250);
+    this.outpost = new Outpost(this, ox, oy);
+    this.player = new Player(this, ox + 140, oy + 140);
+    this.mule = new Mule(this, ox + 200, oy + 200);
+    this.camera.x = this.player.x - this.canvas.width / 2;
+    this.camera.y = this.player.y - this.canvas.height / 2;
+
+    // decorations
+    this.deco = [];
+    for (let i = 0; i < 90; i++) {
+      this.deco.push({
+        x: rand(0, WORLD_W),
+        y: rand(0, WORLD_H),
+        r: rand(8, 45),
+        t: randInt(0, 2),
+        ph: rand(0, TAU),
+      });
+    }
+    // hives
+    const nHives = randInt(3, 5);
+    for (let i = 0; i < nHives; i++) {
+      let hx,
+        hy,
+        ok = false,
+        tries = 0;
+      while (!ok && tries++ < 80) {
+        hx = rand(250, WORLD_W - 250);
+        hy = rand(250, WORLD_H - 250);
+        ok = dist(hx, hy, ox, oy) > 650;
+        for (const h of this.hives) if (dist(hx, hy, h.x, h.y) < 550) ok = false;
+      }
+      this.hives.push(new Hive(this, hx, hy));
+    }
+    // resources
+    const types = [
+      'bioResin',
+      'bioResin',
+      'bioResin',
+      'salvageChips',
+      'salvageChips',
+      'sporeFiber',
+      'sporeFiber',
+      'softQuartz',
+    ];
+    const nRes = randInt(35, 50);
+    for (let i = 0; i < nRes; i++) {
+      let rx,
+        ry,
+        ok = false,
+        tries = 0;
+      while (!ok && tries++ < 60) {
+        rx = rand(120, WORLD_W - 120);
+        ry = rand(120, WORLD_H - 120);
+        ok = dist(rx, ry, ox, oy) > 180;
+      }
+      this.resources.push(new ResourceNode(this, rx, ry, pick(types)));
+    }
+    // starting enemies near hives
+    for (const h of this.hives) {
+      const n = randInt(2, 4);
+      for (let i = 0; i < n; i++) {
+        const a = rand(0, TAU),
+          d = rand(60, 160);
+        this.enemies.push(
+          new Enemy(this, 'skitterling', h.x + Math.cos(a) * d, h.y + Math.sin(a) * d, 1)
+        );
+      }
+    }
+    // mission
+    this.mission = new Mission(this, pick(Object.keys(MISSIONS)));
+    this.toast('Mission: ' + this.mission.def.name + ' — ' + this.mission.def.brief);
+    Sound.evac();
+  }
+  /* ------------------------------ THREAT -------------------------------- */
+  threatLevel() {
+    return Math.min(5, Math.floor(this.run ? this.run.threat : 0));
+  }
+  addThreat(v) {
+    if (!this.run) return;
+    const before = this.threatLevel();
+    this.run.threat = clamp(this.run.threat + v, 0, 5);
+    if (this.threatLevel() > before) {
+      this.toast('THREAT ESCALATED: level ' + this.threatLevel());
+      Sound.alarm();
+    }
+  }
+  /* ------------------------------ END RUN -------------------------------- */
+  finishRun(died) {
+    const r = this.run,
+      m = this.meta;
+    const credits = r.deliveredValue;
+    m.credits += credits;
+    for (const k in r.delivered) m.resources[k] += r.delivered[k];
+    // hydroponics
+    const hydro = m.upgrades.hydroponicsTray * 3;
+    if (hydro > 0) m.resources.bioResin += hydro;
+    let bonusCr = 0;
+    if (!died && this.mission.complete) {
+      bonusCr = 80;
+      if (this.mission.bonus) bonusCr += 60;
+      m.credits += bonusCr;
+    }
+    m.runCount++;
+    m.totalKills += r.kills;
+    m.totalHives += r.hivesDestroyed;
+    const score = r.score + r.deliveredValue + (this.mission.complete ? 100 : 0);
+    m.bestScore = Math.max(m.bestScore, score);
+    this.rerollPrices();
+    this.save();
+    this.endSummary = {
+      died,
+      credits,
+      bonusCr,
+      hydro,
+      missionComplete: this.mission.complete,
+      missionBonus: this.mission.bonus,
+      missionName: this.mission.def.name,
+      kills: r.kills,
+      hives: r.hivesDestroyed,
+      delivered: Object.assign({}, r.delivered),
+      deliveredValue: r.deliveredValue,
+      time: r.time,
+      score,
+    };
+  }
+  onPlayerDeath() {
+    this.finishRun(true);
+    this.state = 'death';
+  }
+  evacuate() {
+    Sound.evac();
+    this.finishRun(false);
+    this.state = 'victory';
+  }
+  toast(msg) {
+    this.toasts.push({ msg, t: 4 });
+    if (this.toasts.length > 4) this.toasts.shift();
+  }
+  /* ------------------------------ MAIN LOOP ------------------------------ */
+  loop(t) {
+    const dt = Math.min(0.05, (t - this.lastTime) / 1000);
+    this.lastTime = t;
+    this.update(dt);
+    this.draw();
+    Input.endFrame();
+    requestAnimationFrame((tt) => this.loop(tt));
+  }
+  update(dt) {
+    this.uiBlocksFire = this.state !== 'playing';
+    for (const ts of this.toasts) ts.t -= dt;
+    this.toasts = this.toasts.filter((ts) => ts.t > 0);
+
+    switch (this.state) {
+      case 'playing':
+        this.updatePlaying(dt);
+        break;
+      case 'paused':
+        if (Input.wasPressed('Escape')) this.state = 'playing';
+        break;
+      case 'station':
+      case 'death':
+      case 'victory':
+        break;
+    }
+  }
+  updatePlaying(dt) {
+    const r = this.run,
+      p = this.player;
+    r.time += dt;
+
+    if (Input.wasPressed('Escape')) {
+      this.state = 'paused';
+      return;
+    }
+    if (Input.wasPressed('m')) this.showMinimap = !this.showMinimap;
+    if (Input.wasPressed('Tab')) this.showStats = !this.showStats;
+
+    // evac
+    const nearOutpost = dist(p.x, p.y, this.outpost.x, this.outpost.y) < 220;
+    if (Input.wasPressed('v')) {
+      if (nearOutpost && !this.evacuating) {
+        this.evacuating = true;
+        this.evacT = p.signal < 10 ? 8 : 4;
+        this.toast('Evacuation started — do not leave the outpost!');
+        Sound.evac();
+      } else if (!nearOutpost) {
+        this.toast('Evacuation is only possible near the outpost');
+      }
+    }
+    if (this.evacuating) {
+      if (!nearOutpost) {
+        this.evacuating = false;
+        this.toast('Evacuation aborted');
+      } else {
+        this.evacT -= dt;
+        if (this.evacT <= 0) {
+          this.evacuate();
+          return;
+        }
+      }
+    }
+
+    // threat over time
+    r.threatT -= dt;
+    if (r.threatT <= 0) {
+      r.threatT = 90;
+      this.addThreat(1);
+    }
+    // carrying rare resources raises threat slowly
+    let rare = 0;
+    for (const k of p.carry) if (k === 'hiveEnzymes' || k === 'softQuartz') rare++;
+    if (rare > 0) r.threat = clamp(r.threat + rare * 0.004 * dt * 10, 0, 5);
+    // lingering near hives raises threat
+    for (const h of this.hives) {
+      if (!h.destroyed && dist(p.x, p.y, h.x, h.y) < h.influence) {
+        r.threat = clamp(r.threat + 0.01 * dt, 0, 5);
+      }
+    }
+
+    // signal stability (Signal Array: each level slows decay)
+    const sigDrop = Math.max(0.35, 1 - 0.2 * this.meta.upgrades.signalArray);
+    let drop = 0;
+    for (const h of this.hives) {
+      if (!h.destroyed && dist(p.x, p.y, h.x, h.y) < h.influence) drop += 4;
+    }
+    if (this.threatLevel() >= 5) drop += 0.8;
+    else if (this.threatLevel() >= 4) drop += 0.3;
+    p.signal = clamp(p.signal - drop * sigDrop * dt, 0, 100);
+    if (this.outpost.active && nearOutpost) p.signal = clamp(p.signal + 6 * dt, 0, 100);
+    else if (dist(p.x, p.y, this.outpost.x, this.outpost.y) < 350)
+      p.signal = clamp(p.signal + 2 * dt, 0, 100);
+
+    // ambient spawn pressure
+    r.spawnT -= dt;
+    const minutes = r.time / 60;
+    const interval = Math.max(1.6, 9 - this.threatLevel() * 0.9 - minutes * 0.3);
+    if (r.spawnT <= 0 && r.time > 30 && this.enemies.length < 70) {
+      r.spawnT = interval;
+      const tl = this.threatLevel();
+      const pool = ['skitterling'];
+      if (tl >= 1) pool.push('skitterling');
+      if (tl >= 2) pool.push('sporeMantis');
+      if (tl >= 3) pool.push('sporeMantis', 'carapaceBull');
+      if (tl >= 4) pool.push('carapaceBull');
+      if (tl >= 5) pool.push('carapaceBull', 'broodWarden');
+      const n = 1 + Math.floor(tl / 2);
+      for (let i = 0; i < n; i++) {
+        const a = rand(0, TAU);
+        const d = rand(620, 900);
+        const sx = clamp(p.x + Math.cos(a) * d, 30, WORLD_W - 30);
+        const sy = clamp(p.y + Math.sin(a) * d, 30, WORLD_H - 30);
+        const e = new Enemy(this, pick(pool), sx, sy, 1 + Math.floor(tl / 2));
+        e.aggro = true;
+        this.enemies.push(e);
+      }
+    }
+
+    // reset warden shields then update enemies
+    for (const e of this.enemies) e.shielded = false;
+    p.update(dt);
+    if (this.mule) this.mule.update(dt);
+    this.outpost.update(dt);
+    for (const h of this.hives) h.update(dt);
+    for (const e of this.enemies) if (!e.dead) e.update(dt);
+    for (const t of this.turrets) if (!t.dead) t.update(dt);
+    for (const m of this.mines) if (!m.dead) m.update(dt);
+    for (const rs of this.resources) rs.update(dt);
+
+    // projectiles
+    for (const pr of this.projectiles) {
+      pr.update(dt, this);
+      if (pr.dead) continue;
+      // vs enemies
+      for (const e of this.enemies) {
+        if (e.dead) continue;
+        if (dist2(pr.x, pr.y, e.x, e.y) < (e.radius + pr.radius) * (e.radius + pr.radius)) {
+          e.takeDamage(pr.damage, pr.prevX, pr.prevY);
+          pr.dead = true;
+          break;
+        }
+      }
+      if (pr.dead) continue;
+      // vs hives
+      for (const h of this.hives) {
+        if (h.destroyed) continue;
+        if (dist2(pr.x, pr.y, h.x, h.y) < (h.radius + pr.radius) * (h.radius + pr.radius)) {
+          h.takeDamage(pr.damage, pr.prevX, pr.prevY);
+          pr.dead = true;
+          break;
+        }
+      }
+    }
+    for (const pr of this.enemyProjectiles) {
+      pr.update(dt, this);
+      if (pr.dead) continue;
+      if (dist2(pr.x, pr.y, p.x, p.y) < (p.radius + pr.radius + (p.shield ? 16 : 0)) ** 2) {
+        p.takeDamage(pr.damage, pr.x, pr.y);
+        pr.dead = true;
+        continue;
+      }
+      if (
+        this.mule &&
+        !this.mule.dead &&
+        dist2(pr.x, pr.y, this.mule.x, this.mule.y) < (this.mule.radius + pr.radius) ** 2
+      ) {
+        this.mule.takeDamage(pr.damage * 0.7);
+        pr.dead = true;
+      }
+    }
+
+    // scanner pulse
+    if (this.scanPulse) {
+      this.scanPulse.r += 700 * dt;
+      if (this.scanPulse.r > this.scanPulse.max) this.scanPulse = null;
+    }
+    this.scanRevealT = Math.max(0, this.scanRevealT - dt);
+    if (this.arcBeam) {
+      this.arcBeam.t -= dt;
+      if (this.arcBeam.t <= 0) this.arcBeam = null;
+    }
+
+    // particles
+    this.particles = this.particles.filter((pt) => pt.update(dt));
+    // cleanup
+    this.projectiles = this.projectiles.filter((x) => !x.dead);
+    this.enemyProjectiles = this.enemyProjectiles.filter((x) => !x.dead);
+    this.enemies = this.enemies.filter((x) => !x.dead);
+    this.turrets = this.turrets.filter((x) => !x.dead);
+    this.mines = this.mines.filter((x) => !x.dead);
+    this.resources = this.resources.filter((x) => !x.dead);
+
+    // mission
+    this.mission.update(dt);
+
+    // camera
+    this.camera.follow(p.x, p.y, dt, this.canvas.width, this.canvas.height);
+  }
+  /* ------------------------------ DRAW ----------------------------------- */
+  draw() {
+    const ctx = this.ctx,
+      W = this.canvas.width,
+      H = this.canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    if (this.state === 'station') {
+      this.drawStation();
+      return;
+    }
+    if (!this.run) {
+      this.drawStation();
+      return;
+    }
+    this.drawWorld();
+    this.drawHUD();
+    if (this.state === 'paused') this.drawPause();
+    if (this.state === 'death') this.drawEnd(true);
+    if (this.state === 'victory') this.drawEnd(false);
+  }
+  drawWorld() {
+    const ctx = this.ctx,
+      cam = this.camera,
+      W = this.canvas.width,
+      H = this.canvas.height;
+    // swamp background
+    const bg = ctx.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#0a1410');
+    bg.addColorStop(1, '#08100e');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+    // grid
+    ctx.strokeStyle = 'rgba(60,120,100,0.07)';
+    ctx.lineWidth = 1;
+    const grid = 120;
+    const gx0 = Math.floor(cam.x / grid) * grid;
+    const gy0 = Math.floor(cam.y / grid) * grid;
+    ctx.beginPath();
+    for (let x = gx0; x < cam.x + W + grid; x += grid) {
+      ctx.moveTo(cam.wx(x), 0);
+      ctx.lineTo(cam.wx(x), H);
+    }
+    for (let y = gy0; y < cam.y + H + grid; y += grid) {
+      ctx.moveTo(0, cam.wy(y));
+      ctx.lineTo(W, cam.wy(y));
+    }
+    ctx.stroke();
+    // world border
+    ctx.strokeStyle = 'rgba(255,93,77,0.35)';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(cam.wx(0), cam.wy(0), WORLD_W, WORLD_H);
+    // decorations (bioluminescent swamp)
+    const t = performance.now() / 1000;
+    for (const d of this.deco) {
+      const x = cam.wx(d.x),
+        y = cam.wy(d.y);
+      if (x < -80 || y < -80 || x > W + 80 || y > H + 80) continue;
+      const p = Math.sin(t * 1.2 + d.ph) * 0.5 + 0.5;
+      if (d.t === 0) {
+        // glow puddle
+        ctx.fillStyle = 'rgba(40,180,140,' + (0.04 + p * 0.04) + ')';
+        ctx.beginPath();
+        ctx.ellipse(x, y, d.r * 1.4, d.r * 0.8, 0, 0, TAU);
+        ctx.fill();
+      } else if (d.t === 1) {
+        // glow plant
+        ctx.strokeStyle = 'rgba(110,230,170,' + (0.18 + p * 0.2) + ')';
+        ctx.lineWidth = 2;
+        for (let i = 0; i < 4; i++) {
+          const a = -Math.PI / 2 + (i - 1.5) * 0.4 + Math.sin(t + d.ph + i) * 0.1;
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.quadraticCurveTo(
+            x + Math.cos(a) * d.r * 0.5,
+            y + Math.sin(a) * d.r * 0.8,
+            x + Math.cos(a) * d.r * 0.7,
+            y + Math.sin(a) * d.r
+          );
+          ctx.stroke();
+        }
+        ctx.fillStyle = 'rgba(150,255,200,' + (0.3 + p * 0.4) + ')';
+        ctx.beginPath();
+        ctx.arc(x, y - d.r * 0.7, 2.5, 0, TAU);
+        ctx.fill();
+      } else {
+        // rock
+        ctx.fillStyle = 'rgba(50,70,75,0.5)';
+        ctx.beginPath();
+        ctx.moveTo(x - d.r * 0.5, y + d.r * 0.3);
+        ctx.lineTo(x, y - d.r * 0.4);
+        ctx.lineTo(x + d.r * 0.5, y + d.r * 0.3);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+    // entities
+    this.outpost.draw(ctx, cam);
+    for (const m of this.mines) m.draw(ctx, cam);
+    const revealed = this.scanRevealT > 0;
+    for (const r of this.resources) r.draw(ctx, cam, revealed);
+    for (const h of this.hives) h.draw(ctx, cam);
+    if (this.mule) this.mule.draw(ctx, cam);
+    for (const tr of this.turrets) tr.draw(ctx, cam);
+    for (const e of this.enemies) e.draw(ctx, cam);
+    if (!this.player.dead) this.player.draw(ctx, cam);
+    for (const pr of this.projectiles) pr.draw(ctx, cam);
+    for (const pr of this.enemyProjectiles) pr.draw(ctx, cam);
+    // arc beam
+    if (this.arcBeam) {
+      ctx.strokeStyle = '#9ab2ff';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      const pts = this.arcBeam.pts;
+      ctx.moveTo(cam.wx(pts[0].x), cam.wy(pts[0].y));
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1],
+          b = pts[i];
+        const mx = (a.x + b.x) / 2 + rand(-8, 8),
+          my = (a.y + b.y) / 2 + rand(-8, 8);
+        ctx.quadraticCurveTo(cam.wx(mx), cam.wy(my), cam.wx(b.x), cam.wy(b.y));
+      }
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+    // scanner ring
+    if (this.scanPulse) {
+      const a = 1 - this.scanPulse.r / this.scanPulse.max;
+      ctx.strokeStyle = 'rgba(122,245,255,' + a * 0.7 + ')';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(cam.wx(this.scanPulse.x), cam.wy(this.scanPulse.y), this.scanPulse.r, 0, TAU);
+      ctx.stroke();
+    }
+    // particles
+    for (const pt of this.particles) pt.draw(ctx, cam);
+    // evac indicator
+    if (this.evacuating) {
+      const p = this.player;
+      ctx.strokeStyle = '#2ee6a8';
+      ctx.lineWidth = 4;
+      const total = p.signal < 10 ? 8 : 4;
+      const frac = 1 - this.evacT / total;
+      ctx.beginPath();
+      ctx.arc(cam.wx(p.x), cam.wy(p.y), p.radius + 26, -Math.PI / 2, -Math.PI / 2 + TAU * frac);
+      ctx.stroke();
+      ctx.fillStyle = '#aef5dc';
+      ctx.font = '12px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('EVAC ' + this.evacT.toFixed(1) + 's', cam.wx(p.x), cam.wy(p.y) - p.radius - 34);
+      ctx.textAlign = 'left';
+    }
+  }
+  /* ------------------------------ HUD ------------------------------------ */
+  glitch() {
+    const p = this.player;
+    if (p && p.signal < 30 && Math.random() < 0.15) return { x: rand(-2.5, 2.5), y: rand(-2, 2) };
+    return { x: 0, y: 0 };
+  }
+  bar(ctx, x, y, w, h, frac, color, label, valText) {
+    ctx.fillStyle = 'rgba(8,16,20,0.75)';
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = color;
+    ctx.fillRect(x + 1, y + 1, (w - 2) * clamp(frac, 0, 1), h - 2);
+    ctx.strokeStyle = 'rgba(180,220,230,0.35)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, w, h);
+    ctx.fillStyle = '#dff6ff';
+    ctx.font = '10px monospace';
+    ctx.fillText(label, x + 4, y + h - 4);
+    if (valText) {
+      ctx.textAlign = 'right';
+      ctx.fillText(valText, x + w - 4, y + h - 4);
+      ctx.textAlign = 'left';
+    }
+  }
+  drawHUD() {
+    const ctx = this.ctx,
+      W = this.canvas.width,
+      H = this.canvas.height;
+    const p = this.player,
+      r = this.run;
+    const gl = this.glitch();
+    ctx.save();
+    ctx.translate(gl.x, gl.y);
+
+    // left bars
+    let y = 14;
+    const bw = 190,
+      bh = 16;
+    this.bar(
+      ctx,
+      14,
+      y,
+      bw,
+      bh,
+      p.health / p.maxHealth,
+      '#3ddc6a',
+      'HP',
+      Math.ceil(p.health) + '/' + p.maxHealth
+    );
+    y += bh + 4;
+    this.bar(ctx, 14, y, bw, bh, 1, '#8aa3b5', 'ARMOR', p.armor.toString());
+    y += bh + 4;
+    this.bar(
+      ctx,
+      14,
+      y,
+      bw,
+      bh,
+      p.energy / p.maxEnergy,
+      '#ffd35d',
+      'ENERGY',
+      Math.floor(p.energy) + ''
+    );
+    y += bh + 4;
+    const sigColor = p.signal > 60 ? '#7af5ff' : p.signal > 30 ? '#ffd35d' : '#ff5d4d';
+    this.bar(ctx, 14, y, bw, bh, p.signal / 100, sigColor, 'SIGNAL', Math.floor(p.signal) + '%');
+    y += bh + 10;
+
+    // weapon
+    const ws = p.weapons[p.weaponKey],
+      def = ws.def;
+    ctx.fillStyle = 'rgba(8,16,20,0.75)';
+    ctx.fillRect(14, y, bw, 40);
+    ctx.strokeStyle = 'rgba(180,220,230,0.35)';
+    ctx.strokeRect(14, y, bw, 40);
+    ctx.fillStyle = def.color;
+    ctx.font = 'bold 12px monospace';
+    ctx.fillText('[' + def.slot + '] ' + def.name, 20, y + 16);
+    ctx.fillStyle = '#dff6ff';
+    ctx.font = '11px monospace';
+    if (def.useHeat) {
+      const txt = ws.overheated ? 'OVERHEAT!' : 'HEAT ' + Math.floor(ws.heat) + '%';
+      ctx.fillText(txt, 20, y + 32);
+      ctx.fillStyle = ws.overheated ? '#ff5d4d' : '#6e8bff';
+      ctx.fillRect(95, y + 24, 100 * (ws.heat / 100), 8);
+    } else if (ws.reloadT > 0) {
+      ctx.fillText('RELOADING...', 20, y + 32);
+    } else {
+      ctx.fillText('AMMO ' + ws.ammo + '/' + def.magSize + '  [R]', 20, y + 32);
+    }
+    y += 48;
+
+    // devices
+    const devs = [
+      ['Q', 'Turret', p.dev.turret, 25],
+      ['F', 'Shield', p.dev.shield, 18],
+      ['C', 'Scan', p.dev.scanner, 12],
+      ['X', 'Mine', p.dev.mine, 10],
+    ];
+    let dx = 14;
+    for (const [key, name, cd, max] of devs) {
+      const ready = cd <= 0;
+      ctx.fillStyle = ready ? 'rgba(20,46,40,0.85)' : 'rgba(8,16,20,0.75)';
+      ctx.fillRect(dx, y, 44, 34);
+      ctx.strokeStyle = ready ? '#2ee6a8' : 'rgba(120,140,150,0.4)';
+      ctx.strokeRect(dx, y, 44, 34);
+      ctx.fillStyle = ready ? '#aef5dc' : '#7a8b99';
+      ctx.font = 'bold 11px monospace';
+      ctx.fillText(key, dx + 4, y + 13);
+      ctx.font = '9px monospace';
+      ctx.fillText(ready ? name : Math.ceil(cd) + 's', dx + 4, y + 27);
+      dx += 48;
+    }
+    y += 42;
+
+    // carry
+    ctx.fillStyle = '#dff6ff';
+    ctx.font = '11px monospace';
+    ctx.fillText(
+      'Carry: ' +
+        p.carryWeight() +
+        '/' +
+        p.carryCapacity +
+        ' weight  •  Delivered: ' +
+        r.deliveredValue +
+        ' cr',
+      14,
+      y + 10
+    );
+    y += 16;
+    // carried items summary
+    const counts = {};
+    for (const k of p.carry) counts[k] = (counts[k] || 0) + 1;
+    let cx = 14;
+    for (const k in counts) {
+      ctx.fillStyle = RESOURCE_TYPES[k].color;
+      ctx.fillText('◆' + counts[k], cx, y + 10);
+      cx += 34;
+    }
+    y += 18;
+    // mule
+    if (this.mule && !this.mule.dead) {
+      ctx.fillStyle = '#bfe6cf';
+      ctx.fillText(
+        'Mule-3: ' +
+          Math.ceil(this.mule.hp) +
+          '/' +
+          this.mule.maxHp +
+          ' HP  •  slots ' +
+          this.mule.cargo.length +
+          '/' +
+          this.mule.cargoSlots,
+        14,
+        y + 10
+      );
+    } else {
+      ctx.fillStyle = '#ff8d8d';
+      ctx.fillText('Mule-3: DESTROYED', 14, y + 10);
+    }
+
+    // top center: mission + threat + timer
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(8,16,20,0.7)';
+    const mw = 520;
+    ctx.fillRect(W / 2 - mw / 2, 10, mw, 58);
+    ctx.strokeStyle = 'rgba(180,220,230,0.3)';
+    ctx.strokeRect(W / 2 - mw / 2, 10, mw, 58);
+    ctx.fillStyle = '#ffd35d';
+    ctx.font = 'bold 13px monospace';
+    ctx.fillText(
+      this.mission.def.name + (this.mission.complete ? ' ✔ COMPLETE — evacuate [V]' : ''),
+      W / 2,
+      28
+    );
+    ctx.fillStyle = '#dff6ff';
+    ctx.font = '12px monospace';
+    ctx.fillText(this.mission.objectiveText(), W / 2, 45);
+    const tl = this.threatLevel();
+    ctx.fillStyle = tl >= 4 ? '#ff5d4d' : tl >= 2 ? '#ffd35d' : '#7af5ff';
+    ctx.fillText(
+      'THREAT ' + tl + '/5  ' + '█'.repeat(tl) + '░'.repeat(5 - tl) + '   ⏱ ' + fmtTime(r.time),
+      W / 2,
+      61
+    );
+    ctx.textAlign = 'left';
+
+    // toasts
+    let ty = H - 120;
+    ctx.font = '12px monospace';
+    for (let i = this.toasts.length - 1; i >= 0; i--) {
+      const ts = this.toasts[i];
+      ctx.globalAlpha = clamp(ts.t, 0, 1);
+      ctx.fillStyle = 'rgba(8,20,24,0.8)';
+      const tw = ctx.measureText(ts.msg).width + 16;
+      ctx.fillRect(W / 2 - tw / 2, ty, tw, 20);
+      ctx.fillStyle = '#dff6ff';
+      ctx.textAlign = 'center';
+      ctx.fillText(ts.msg, W / 2, ty + 14);
+      ctx.textAlign = 'left';
+      ctx.globalAlpha = 1;
+      ty -= 24;
+    }
+
+    // controls hint
+    ctx.fillStyle = 'rgba(190,220,230,0.45)';
+    ctx.font = '10px monospace';
+    ctx.fillText(
+      'WASD move • LMB fire • E interact • Shift dash • V evacuate • M map • Esc pause',
+      14,
+      H - 10
+    );
+
+    // minimap
+    if (this.showMinimap) this.drawMinimap();
+    if (this.showStats) this.drawStatsOverlay();
+    ctx.restore();
+  }
+  drawMinimap() {
+    const ctx = this.ctx,
+      W = this.canvas.width;
+    const size = 170,
+      mx = W - size - 14,
+      my = 14;
+    const sc = size / WORLD_W;
+    ctx.fillStyle = 'rgba(6,14,12,0.8)';
+    ctx.fillRect(mx, my, size, size);
+    ctx.strokeStyle = 'rgba(122,245,255,0.4)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(mx, my, size, size);
+    // outpost
+    ctx.fillStyle = this.outpost.active ? '#2ee6a8' : '#8aa3b5';
+    ctx.fillRect(mx + this.outpost.x * sc - 3, my + this.outpost.y * sc - 3, 6, 6);
+    // hives
+    for (const h of this.hives) {
+      if (h.destroyed) continue;
+      ctx.fillStyle = '#ff5d8a';
+      ctx.beginPath();
+      ctx.arc(mx + h.x * sc, my + h.y * sc, 2 + h.level, 0, TAU);
+      ctx.fill();
+    }
+    // mule
+    if (this.mule && !this.mule.dead) {
+      ctx.fillStyle = '#5dffc8';
+      ctx.fillRect(mx + this.mule.x * sc - 2, my + this.mule.y * sc - 2, 4, 4);
+    }
+    // scanned resources + enemies
+    if (this.scanRevealT > 0) {
+      for (const r of this.resources) {
+        ctx.fillStyle = RESOURCE_TYPES[r.type].color;
+        ctx.fillRect(mx + r.x * sc - 1, my + r.y * sc - 1, 2, 2);
+      }
+      ctx.fillStyle = '#ff5d4d';
+      for (const e of this.enemies) {
+        ctx.fillRect(mx + e.x * sc - 1, my + e.y * sc - 1, 2, 2);
+      }
+    }
+    // player
+    const p = this.player;
+    ctx.fillStyle = '#7af5ff';
+    ctx.beginPath();
+    ctx.arc(mx + p.x * sc, my + p.y * sc, 3, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(190,220,230,0.6)';
+    ctx.font = '9px monospace';
+    ctx.fillText('MORROW FEN [M]', mx + 4, my + size - 5);
+  }
+  drawStatsOverlay() {
+    const ctx = this.ctx,
+      W = this.canvas.width;
+    const x = W - 230,
+      y = 200,
+      w = 216;
+    ctx.fillStyle = 'rgba(6,14,16,0.85)';
+    ctx.fillRect(x, y, w, 150);
+    ctx.strokeStyle = 'rgba(122,245,255,0.35)';
+    ctx.strokeRect(x, y, w, 150);
+    ctx.fillStyle = '#7af5ff';
+    ctx.font = 'bold 11px monospace';
+    ctx.fillText('RUN STATS [Tab]', x + 8, y + 16);
+    ctx.fillStyle = '#dff6ff';
+    ctx.font = '11px monospace';
+    const r = this.run;
+    const lines = [
+      'Kills: ' + r.kills,
+      'Hives destroyed: ' + r.hivesDestroyed,
+      'Delivered: ' + r.deliveredValue + ' cr',
+      'Threat: ' + r.threat.toFixed(1) + '/5',
+      'Score: ' + r.score,
+      'Station credits: ' + this.meta.credits,
+    ];
+    lines.forEach((l, i) => ctx.fillText(l, x + 8, y + 36 + i * 18));
+  }
+  /* ------------------------------ UI BUTTONS ----------------------------- */
+  button(x, y, w, h, label, cb, enabled, color) {
+    const ctx = this.ctx;
+    const hover =
+      Input.mouseX >= x && Input.mouseX <= x + w && Input.mouseY >= y && Input.mouseY <= y + h;
+    const en = enabled !== false;
+    ctx.fillStyle = en
+      ? hover
+        ? 'rgba(46,230,168,0.25)'
+        : 'rgba(20,40,38,0.85)'
+      : 'rgba(20,26,30,0.6)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = en ? color || '#2ee6a8' : 'rgba(110,130,140,0.4)';
+    ctx.lineWidth = hover && en ? 2 : 1;
+    ctx.strokeRect(x, y, w, h);
+    ctx.fillStyle = en ? '#dffff2' : '#7a8b99';
+    ctx.font = 'bold 12px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, x + w / 2, y + h / 2 + 4);
+    ctx.textAlign = 'left';
+    if (hover && en && Input.mouseClicked) cb();
+  }
+  /* ------------------------------ STATION -------------------------------- */
+  drawStation() {
+    const ctx = this.ctx,
+      W = this.canvas.width,
+      H = this.canvas.height;
+    const m = this.meta;
+    // starfield bg
+    const bg = ctx.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#070b14');
+    bg.addColorStop(1, '#0a1410');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+    const t = performance.now() / 1000;
+    for (let i = 0; i < 80; i++) {
+      const sx = (i * 137.5) % W,
+        sy = (i * 89.3) % H;
+      const tw = Math.sin(t * 2 + i) * 0.5 + 0.5;
+      ctx.fillStyle = 'rgba(200,230,255,' + (0.15 + tw * 0.3) + ')';
+      ctx.fillRect(sx, sy, 1.5, 1.5);
+    }
+    // planet
+    const px = W * 0.85,
+      py = H * 0.8;
+    const pg = ctx.createRadialGradient(px - 30, py - 30, 20, px, py, 160);
+    pg.addColorStop(0, '#1f5a48');
+    pg.addColorStop(1, '#0a2018');
+    ctx.fillStyle = pg;
+    ctx.beginPath();
+    ctx.arc(px, py, 160, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(93,255,160,0.12)';
+    for (let i = 0; i < 6; i++) {
+      ctx.beginPath();
+      ctx.ellipse(px + Math.sin(i * 2.3) * 80, py + Math.cos(i * 1.7) * 80, 38, 14, i, 0, TAU);
+      ctx.fill();
+    }
+
+    // header
+    ctx.fillStyle = '#7af5ff';
+    ctx.font = 'bold 26px monospace';
+    ctx.fillText('PALE HARBOR STATION', 40, 50);
+    ctx.fillStyle = '#9fb6c4';
+    ctx.font = '12px monospace';
+    ctx.fillText(
+      'Morrow Fen orbit • Year 2184 • Runs: ' + m.runCount + ' • Best: ' + m.bestScore,
+      40,
+      70
+    );
+
+    // credits + resources
+    ctx.fillStyle = '#ffd35d';
+    ctx.font = 'bold 16px monospace';
+    ctx.fillText('CREDITS: ' + m.credits, 40, 100);
+    let rx = 40;
+    ctx.font = '12px monospace';
+    for (const k in RESOURCE_TYPES) {
+      ctx.fillStyle = RESOURCE_TYPES[k].color;
+      const txt =
+        RESOURCE_TYPES[k].name + ': ' + m.resources[k] + '  (price ' + this.sellPrice(k) + ')';
+      ctx.fillText('◆ ' + txt, rx, 122);
+      rx += ctx.measureText('◆ ' + txt).width + 22;
+      if (rx > W - 260) {
+        rx = 40;
+      }
+    }
+
+    // upgrades panel
+    ctx.fillStyle = '#dff6ff';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText('STATION UPGRADES', 40, 158);
+    const keys = Object.keys(UPGRADES);
+    const colW = Math.min(440, (W - 100) / 2);
+    keys.forEach((k, i) => {
+      const def = UPGRADES[k];
+      const lvl = m.upgrades[k];
+      const col = i % 2,
+        row = Math.floor(i / 2);
+      const x = 40 + col * (colW + 20);
+      const y = 172 + row * 78;
+      ctx.fillStyle = 'rgba(12,22,26,0.85)';
+      ctx.fillRect(x, y, colW, 70);
+      ctx.strokeStyle = 'rgba(122,245,255,0.25)';
+      ctx.strokeRect(x, y, colW, 70);
+      ctx.fillStyle = '#aef5dc';
+      ctx.font = 'bold 12px monospace';
+      ctx.fillText(def.name + '  [' + lvl + '/' + def.max + ']', x + 10, y + 18);
+      ctx.fillStyle = '#9fb6c4';
+      ctx.font = '11px monospace';
+      ctx.fillText(def.desc, x + 10, y + 34);
+      if (lvl < def.max) {
+        const c = this.upgradeCost(k);
+        let costStr = c.credits + ' cr';
+        for (const r in c.res) costStr += ' + ' + c.res[r] + ' ' + RESOURCE_TYPES[r].name;
+        ctx.fillStyle = this.canBuy(k) ? '#ffd35d' : '#7a6a50';
+        ctx.fillText(costStr, x + 10, y + 52);
+        this.button(x + colW - 92, y + 38, 82, 24, 'BUY', () => this.buyUpgrade(k), this.canBuy(k));
+      } else {
+        ctx.fillStyle = '#2ee6a8';
+        ctx.fillText('MAXED', x + 10, y + 52);
+      }
+    });
+
+    // start button
+    this.button(
+      W / 2 - 150,
+      H - 80,
+      300,
+      46,
+      '▶ START NEW EXPEDITION',
+      () => this.startRun(),
+      true,
+      '#7af5ff'
+    );
+    ctx.fillStyle = 'rgba(190,220,230,0.5)';
+    ctx.font = '11px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(
+      'A Vanguard clone will be dropped on Morrow Fen. The mission is chosen at random.',
+      W / 2,
+      H - 24
+    );
+    ctx.textAlign = 'left';
+  }
+  /* ------------------------------ PAUSE ----------------------------------- */
+  drawPause() {
+    const ctx = this.ctx,
+      W = this.canvas.width,
+      H = this.canvas.height;
+    ctx.fillStyle = 'rgba(4,8,10,0.75)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#7af5ff';
+    ctx.font = 'bold 28px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('PAUSED', W / 2, H / 2 - 90);
+    ctx.textAlign = 'left';
+    this.button(W / 2 - 130, H / 2 - 50, 260, 40, 'RESUME [Esc]', () => (this.state = 'playing'));
+    this.button(W / 2 - 130, H / 2 + 2, 260, 40, 'RESTART EXPEDITION', () => this.startRun());
+    this.button(
+      W / 2 - 130,
+      H / 2 + 54,
+      260,
+      40,
+      'RETURN TO STATION',
+      () => {
+        // abandoning run: deliveries are kept
+        this.finishRun(true);
+        this.state = 'station';
+      },
+      true,
+      '#ff8d8d'
+    );
+  }
+  /* ------------------------------ END SCREENS ----------------------------- */
+  drawEnd(died) {
+    const ctx = this.ctx,
+      W = this.canvas.width,
+      H = this.canvas.height;
+    const s = this.endSummary;
+    if (!s) {
+      this.state = 'station';
+      return;
+    }
+    ctx.fillStyle = 'rgba(4,8,10,0.82)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center';
+    if (died) {
+      ctx.fillStyle = '#ff5d4d';
+      ctx.font = 'bold 34px monospace';
+      ctx.fillText('CLONE LOST', W / 2, H / 2 - 150);
+      ctx.fillStyle = '#9fb6c4';
+      ctx.font = '13px monospace';
+      ctx.fillText(
+        'Contact with the clone was lost. Delivered cargo is kept by the station.',
+        W / 2,
+        H / 2 - 122
+      );
+    } else {
+      ctx.fillStyle = s.missionComplete ? '#2ee6a8' : '#ffd35d';
+      ctx.font = 'bold 34px monospace';
+      ctx.fillText(
+        s.missionComplete ? 'MISSION COMPLETE' : 'PARTIAL EXTRACTION',
+        W / 2,
+        H / 2 - 150
+      );
+      ctx.fillStyle = '#9fb6c4';
+      ctx.font = '13px monospace';
+      ctx.fillText('The clone returned to Pale Harbor station.', W / 2, H / 2 - 122);
+    }
+    ctx.fillStyle = '#dff6ff';
+    ctx.font = '14px monospace';
+    const lines = [
+      'Mission: ' +
+        s.missionName +
+        (s.missionComplete ? ' — complete' : ' — failed') +
+        (s.missionBonus ? ' (+bonus!)' : ''),
+      'Time: ' + fmtTime(s.time) + '   Kills: ' + s.kills + '   Hives: ' + s.hives,
+      'Delivered: ' + s.deliveredValue + ' cr',
+      'Credits: +' + s.credits + (s.bonusCr ? '  (mission bonus +' + s.bonusCr + ')' : ''),
+      s.hydro ? 'Hydroponics: +' + s.hydro + ' Bio Resin' : '',
+      'Score: ' + s.score + '   Best: ' + this.meta.bestScore,
+    ].filter(Boolean);
+    lines.forEach((l, i) => ctx.fillText(l, W / 2, H / 2 - 80 + i * 26));
+    // delivered breakdown
+    let dl = 'Delivered: ';
+    const dk = Object.keys(s.delivered);
+    if (dk.length === 0) dl += 'nothing';
+    else dl += dk.map((k) => RESOURCE_TYPES[k].name + ' ×' + s.delivered[k]).join(', ');
+    ctx.fillStyle = '#9fb6c4';
+    ctx.font = '12px monospace';
+    ctx.fillText(dl, W / 2, H / 2 + 86);
+    ctx.textAlign = 'left';
+    this.button(W / 2 - 130, H / 2 + 110, 260, 42, 'TO STATION', () => {
+      this.state = 'station';
+    });
+  }
+}
+
+export { Game };

@@ -2,9 +2,9 @@
 
 # 🛰️ ExoSwarm Salvage
 
-**Top-down sci-fi survival roguelite shooter на чистом JavaScript и Canvas 2D**
+**A top-down sci-fi survival roguelite shooter in vanilla JavaScript + Canvas 2D**
 
-_Без библиотек. Без ассетов. Один файл. Чистая вакуумная пустота космоса и рой враждебной биомассы._
+_No libraries. No assets. Just the cold vacuum of space and a swarm of hostile biomass._
 
 [![Made with Vanilla JS](https://img.shields.io/badge/Made%20with-Vanilla%20JS-f7df1e?logo=javascript&logoColor=000)](https://developer.mozilla.org/docs/Web/JavaScript)
 [![Canvas 2D](https://img.shields.io/badge/Render-Canvas%202D-6e8bff)](https://developer.mozilla.org/docs/Web/API/Canvas_API)
@@ -16,154 +16,168 @@ _Без библиотек. Без ассетов. Один файл. Чиста
 
 ---
 
-## 📖 Об игре
+## 📖 About
 
-**ExoSwarm Salvage** — это динамичный космический шутер-рогалик с видом сверху. Вы управляете
-боевым клоном **Vanguard**, которого станция **Pale Harbor** высаживает на заражённую планету
-**Morrow Fen**. Цель проста и беспощадна: собрать ценный сальваж, выполнить миссию и
-эвакуироваться до того, как рой экзо-биомассы разорвёт вашу оболочку на части.
+**ExoSwarm Salvage** is a fast-paced top-down roguelite shooter. You control a **Vanguard** combat
+clone, dropped by the **Pale Harbor** station onto the infested planet **Morrow Fen**. The goal is
+simple and merciless: harvest valuable salvage, complete your mission, and evacuate before the
+exo-biomass swarm tears your shell apart.
 
-Каждая вылазка процедурна и случайна. Между вылазками вы возвращаетесь на станцию, тратите
-кредиты на постоянные улучшения и снова ныряете в туман войны. Классический gameplay-цикл
-рогалика: **вылазка → добыча → прокачка → вылазка**.
+Every run is procedural and random. Between runs you return to the station, spend credits on
+permanent upgrades, and dive back into the fog of war. The classic roguelite loop:
+**deploy → harvest → upgrade → deploy**.
 
-Весь проект — это `index.html`, `style.css` и один файл `main.js` (~2500 строк). Звук
-синтезируется на лету через Web Audio API, графика рисуется примитивами Canvas 2D. **Ноль
-внешних ассетов и ноль рантайм-зависимостей.**
+The whole game is rendered with Canvas 2D primitives and the audio is synthesized on the fly with
+the Web Audio API — **zero external assets and zero runtime dependencies.**
 
-## ✨ Особенности
+## ✨ Features
 
-- 🎮 **Три типа оружия** — Pulse Rifle, Shotgun и Arc Projector (с механикой перегрева).
-- 🛠️ **Четыре боевых устройства** — турель, энергощит, сканер местности и мина.
-- 👾 **Разнообразные враги** — Skitterling, Spore Mantis, Carapace Bull, Brood Warden и ульи.
-- 📦 **Система добычи и веса** — лёгкий сальваж тянется магнитом, тяжёлый грузится в транспорт **Mule-3**.
-- 🎯 **Три типа миссий** — Resource Run, Hive Purge и Outpost Recovery, каждая с бонус-целью.
-- 📈 **Мета-прогрессия** — 8 постоянных улучшений станции, кредиты, рекорды.
-- 📡 **Механика Signal Stability** — чем дольше вы на поверхности, тем дольше тянется эвакуация.
-- 🔊 **Процедурный звук** через Web Audio API — без единого аудиофайла.
-- ⚡ **Мгновенный запуск** — открывается прямо в браузере, грузится за миллисекунды.
+- 🎮 **Three weapons** — Pulse Rifle, Shotgun and Arc Projector (with a heat/overheat mechanic).
+- 🛠️ **Four combat devices** — turret, energy shield, area scanner and mine.
+- 👾 **Varied enemies** — Skitterling, Spore Mantis, Carapace Bull, Brood Warden, and Hives.
+- 📦 **Salvage & weight system** — light salvage is magneted in, heavy salvage is hauled by **Mule-3**.
+- 🎯 **Three mission types** — Resource Run, Hive Purge and Outpost Recovery, each with a bonus objective.
+- 📈 **Meta progression** — 8 permanent station upgrades, credits, best-score tracking.
+- 📡 **Signal Stability mechanic** — the longer you stay on the surface, the longer evac takes.
+- 🔊 **Procedural audio** via the Web Audio API — not a single sound file.
+- ⚡ **Instant start** — opens straight in the browser, loads in milliseconds.
 
-## 🚀 Быстрый старт
+## 🚀 Quick start
 
-Игре не нужен сборщик, чтобы запуститься — это статика. Но для удобной разработки настроен Vite.
+The game runs as plain static content, but a Vite-based dev workflow is set up for convenience.
 
-### Вариант 1 — просто открыть
+### Option 1 — just open it
 
-Откройте `index.html` в браузере. Всё.
+Open `index.html` in a browser. That's it.
 
-### Вариант 2 — dev-сервер с live-reload (рекомендуется)
-
-```bash
-npm install      # один раз — поставить инструменты разработки
-npm run dev      # запустить Vite dev-сервер на http://localhost:5173
-```
-
-### Production-сборка
+### Option 2 — dev server with live reload (recommended)
 
 ```bash
-npm run build    # собрать минифицированную версию в dist/
-npm run preview  # локально посмотреть собранную версию
+npm install      # one time — install the dev tooling
+npm run dev      # start the Vite dev server at http://localhost:5173
 ```
 
-## 🎮 Управление
-
-| Действие              | Клавиша / ввод        |
-| --------------------- | --------------------- |
-| Движение              | `W` `A` `S` `D`       |
-| Прицел / огонь        | Мышь / **ЛКМ**        |
-| Рывок (dash)          | `Shift`               |
-| Перезарядка           | `R`                   |
-| Сменить оружие        | `1` `2` `3`           |
-| Турель                | `Q`                   |
-| Энергощит             | `F`                   |
-| Сканер                | `C`                   |
-| Мина                  | `X`                   |
-| Взаимодействие        | `E`                   |
-| Эвакуация             | `V` (рядом с аванпостом) |
-| Карта                 | `M`                   |
-| Статистика            | `Tab`                 |
-| Пауза                 | `Esc`                 |
-
-## 🗺️ Геймплейный цикл
-
-1. **Высадка.** Станция Pale Harbor десантирует клона на Morrow Fen со случайной миссией.
-2. **Зачистка и добыча.** Уничтожайте рой, собирайте ресурсы: Bio Resin, Spore Fiber, Salvage
-   Chips, Soft Quartz и редкие Hive Enzymes.
-3. **Доставка.** Лёгкий груз несите на Cargo Pad сами, тяжёлый — загружайте в транспорт **Mule-3**.
-4. **Эвакуация.** Доберитесь до аванпоста и удерживайте позицию, пока идёт эвакуация (тем дольше,
-   чем ниже **Signal Stability**).
-5. **Прокачка.** На станции тратьте кредиты на 8 типов улучшений и возвращайтесь сильнее.
-
-## 🧱 Архитектура
-
-Весь код — в одном файле [`main.js`](main.js), разбитом на логические секции:
-
-```
-UTILS        — математика, хелперы (clamp, lerp, угловые функции)
-AUDIO        — синтез звука через Web Audio API
-DATA         — конфиги оружия, врагов, ресурсов, улучшений, миссий
-INPUT        — клавиатура и мышь
-CAMERA       — следящая камера с тряской
-PARTICLES    — система частиц
-PROJECTILE   — снаряды
-PLAYER       — клон Vanguard: движение, стрельба, устройства
-ENEMY / HIVE — ИИ роя и ульи
-RESOURCE / MULE / OUTPOST / TURRET / MINE  — объекты мира
-MISSION      — логика миссий и бонус-целей
-GAME         — главный игровой цикл, состояния, рендер, HUD
-BOOT         — точка входа
-```
-
-Состояния игры: `station` → `playing` → `paused` / `death` / `victory`.
-
-## 🛠️ Инструменты разработки
-
-Проект обвязан минимальным, но полным набором инструментов:
-
-| Инструмент      | Назначение                              | Команда             |
-| --------------- | --------------------------------------- | ------------------- |
-| **Vite**        | dev-сервер с live-reload и сборка       | `npm run dev`       |
-| **ESLint**      | статический анализ кода (flat config)   | `npm run lint`      |
-| **Prettier**    | автоформатирование                      | `npm run format`    |
-| **EditorConfig**| единый стиль отступов в любом редакторе | _автоматически_     |
-
-Дополнительно: `.vscode/extensions.json` рекомендует нужные расширения, `.gitignore`
-настроен под Node + Vite.
+### Production build
 
 ```bash
-npm run lint        # проверить код
-npm run lint:fix    # починить, что можно автоматически
-npm run format      # отформатировать весь проект
+npm run build    # build a minified version into dist/
+npm run preview  # preview the production build locally
 ```
 
-## 📂 Структура проекта
+## 🎮 Controls
+
+| Action        | Key / input            |
+| ------------- | ---------------------- |
+| Move          | `W` `A` `S` `D`        |
+| Aim / fire    | Mouse / **LMB**        |
+| Dash          | `Shift`                |
+| Reload        | `R`                    |
+| Switch weapon | `1` `2` `3`            |
+| Turret        | `Q`                    |
+| Energy shield | `F`                    |
+| Scanner       | `C`                    |
+| Mine          | `X`                    |
+| Interact      | `E`                    |
+| Evacuate      | `V` (near the outpost) |
+| Map           | `M`                    |
+| Run stats     | `Tab`                  |
+| Pause         | `Esc`                  |
+
+## 🗺️ Gameplay loop
+
+1. **Deploy.** Pale Harbor station drops a clone onto Morrow Fen with a random mission.
+2. **Clear & harvest.** Destroy the swarm and collect resources: Bio Resin, Spore Fiber, Salvage
+   Chips, Soft Quartz and rare Hive Enzymes.
+3. **Deliver.** Carry light cargo to the Cargo Pad yourself; load heavy cargo into the **Mule-3** hauler.
+4. **Evacuate.** Reach the outpost and hold position while evac runs (longer the lower your
+   **Signal Stability**).
+5. **Upgrade.** Back at the station, spend credits on 8 upgrade types and return stronger.
+
+## 🧱 Architecture
+
+The game is structured as ES modules under [`src/`](src/). `index.html` loads
+[`src/main.js`](src/main.js) as a module, which boots the [`Game`](src/game.js).
+
+```
+src/
+├── main.js                # entry / boot
+├── game.js                # main loop, states, world spawning, rendering, HUD, save/load
+├── core/
+│   ├── utils.js           # math & helpers (clamp, lerp, angle math, …)
+│   ├── audio.js           # Web Audio API sound synthesis
+│   ├── input.js           # keyboard & mouse
+│   └── camera.js          # follow camera with screen shake
+├── config/
+│   └── data.js            # weapon / enemy / resource / upgrade / mission config
+├── entities/
+│   ├── particles.js       # particle system
+│   ├── projectile.js      # projectiles
+│   ├── player.js          # Vanguard clone: movement, weapons, devices
+│   ├── enemy.js           # swarm AI
+│   └── hive.js            # hives that spawn and grow
+├── world/
+│   ├── resource.js        # collectible salvage nodes
+│   ├── mule.js            # Mule-3 cargo hauler
+│   ├── outpost.js         # cargo pad, reactor, repair, evac
+│   ├── turret.js          # deployable / outpost turret
+│   └── mine.js            # proximity mine
+└── systems/
+    └── mission.js         # mission objectives & bonus goals
+```
+
+Game states: `station` → `playing` → `paused` / `death` / `victory`.
+
+Most entities receive the `Game` instance and reach siblings through it (`g.player`, `g.enemies`,
+`g.particles`, …) rather than importing each other directly. See [`CLAUDE.md`](CLAUDE.md) for the
+full dependency model and conventions.
+
+## 🛠️ Development tooling
+
+| Tool             | Purpose                               | Command          |
+| ---------------- | ------------------------------------- | ---------------- |
+| **Vite**         | dev server with live reload + build   | `npm run dev`    |
+| **ESLint**       | static analysis (flat config)         | `npm run lint`   |
+| **Prettier**     | code formatting                       | `npm run format` |
+| **EditorConfig** | consistent indentation across editors | _automatic_      |
+
+```bash
+npm run lint        # check the code
+npm run lint:fix    # auto-fix what can be fixed
+npm run format      # format the whole repo
+```
+
+`.vscode/extensions.json` recommends the matching editor extensions, and `.gitignore` /
+`.gitattributes` are set up for a Node + Vite project.
+
+## 📂 Project layout
 
 ```
 ExoSwarm-Salvage/
-├── index.html          # точка входа
-├── style.css           # стили холста
-├── main.js             # вся игра (~2500 строк)
-├── package.json        # скрипты и dev-зависимости
-├── vite.config.js      # конфиг dev-сервера и сборки
-├── eslint.config.js    # правила линтинга (flat config)
-├── .prettierrc.json    # правила форматирования
-├── .editorconfig       # единый стиль кода
-├── .gitignore
+├── index.html          # loads src/main.js as a module
+├── style.css           # canvas styles
+├── src/                # game source (ES modules)
+├── package.json        # scripts & dev dependencies
+├── vite.config.js      # dev server + build config
+├── eslint.config.js    # lint rules (flat config)
+├── .prettierrc.json    # formatting rules
+├── .editorconfig       # shared editor settings
+├── CLAUDE.md           # context for AI assistants / contributors
 └── LICENSE
 ```
 
-## 🤝 Контрибьюции
+## 🤝 Contributing
 
-PR и issue приветствуются. Перед коммитом прогоните `npm run lint` и `npm run format`.
+PRs and issues are welcome. Run `npm run lint` and `npm run format` before committing, and keep all
+user-facing text in English.
 
-## 📜 Лицензия
+## 📜 License
 
-Распространяется под лицензией [MIT](LICENSE).
+Released under the [MIT](LICENSE) license.
 
 ---
 
 <div align="center">
 
-_«Орбита Morrow Fen • Год 2184 • Клон Vanguard готов к высадке»_
+_"Morrow Fen orbit • Year 2184 • Vanguard clone ready for deployment"_
 
 </div>
