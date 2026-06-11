@@ -17,13 +17,15 @@ class Mine {
     this.armT -= dt;
     this.blink += dt * 6;
     if (this.armT > 0) return;
-    for (const e of this.game.enemies) {
-      if (e.dead) continue;
-      if (dist2(this.x, this.y, e.x, e.y) < (30 + e.radius) * (30 + e.radius)) {
-        this.explode();
-        return;
+    let triggered = false;
+    this.game.enemyGrid.queryCircle(this.x, this.y, 30 + 30, (e) => {
+      if (!e.dead && dist2(this.x, this.y, e.x, e.y) < (30 + e.radius) * (30 + e.radius)) {
+        triggered = true;
+        return true;
       }
-    }
+      return false;
+    });
+    if (triggered) this.explode();
   }
   explode() {
     this.dead = true;
@@ -32,10 +34,11 @@ class Mine {
     g.camera.addShake(6);
     burst(g, this.x, this.y, '#ffd35d', 24, 240, 5, 0.8);
     burst(g, this.x, this.y, '#ff7a3d', 14, 160, 4, 0.6);
-    for (const e of g.enemies) {
-      if (e.dead) continue;
-      if (dist(this.x, this.y, e.x, e.y) < 80 + e.radius) e.takeDamage(90, this.x, this.y);
-    }
+    g.enemyGrid.queryCircle(this.x, this.y, 80 + 30, (e) => {
+      if (!e.dead && dist(this.x, this.y, e.x, e.y) < 80 + e.radius)
+        e.takeDamage(90, this.x, this.y);
+      return false;
+    });
     for (const h of g.hives) {
       if (!h.destroyed && dist(this.x, this.y, h.x, h.y) < 80 + h.radius)
         h.takeDamage(90, this.x, this.y);

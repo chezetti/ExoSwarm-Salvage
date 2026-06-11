@@ -26,6 +26,10 @@ class Mission {
         this.complete = r.reactorActivated && r.deliveredValue >= 60 && r.reactorTimer >= 90;
         this.bonus = this.complete && !r.muleLost;
         break;
+      case 'apexHunt':
+        this.complete = !!r.bossSlain;
+        this.bonus = this.complete && r.bossKillT - r.bossT <= 90;
+        break;
     }
   }
   objectiveText() {
@@ -43,6 +47,10 @@ class Mission {
         parts.push('Hold: ' + Math.min(90, Math.floor(r.reactorTimer)) + '/90s');
         return parts.join('  •  ');
       }
+      case 'apexHunt':
+        if (!r.bossSpawned) return 'Provoke the swarm: reach max threat or destroy every hive';
+        if (!r.bossSlain) return 'Slay the Apex Warden!';
+        return 'Apex Warden destroyed — evacuate [V]';
     }
     return '';
   }

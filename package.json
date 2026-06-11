@@ -11,7 +11,8 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "test": "vitest run"
   },
   "keywords": [
     "game",
@@ -28,6 +29,10 @@
     "eslint": "^9.17.0",
     "globals": "^15.14.0",
     "prettier": "^3.4.2",
-    "vite": "^6.0.7"
+    "vite": "^6.0.7",
+    "vitest": "^4.1.8"
+  },
+  "dependencies": {
+    "tone": "^15.1.22"
   }
 }

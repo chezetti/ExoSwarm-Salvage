@@ -3,7 +3,7 @@ import { WORLD_W, WORLD_H } from '../config/data.js';
 
 /* ============================ PROJECTILE ================================ */
 class Projectile {
-  constructor(x, y, angle, speed, damage, radius, color, friendly, range) {
+  constructor(x, y, angle, speed, damage, radius, color, friendly, range, opts = {}) {
     this.x = x;
     this.y = y;
     this.vx = Math.cos(angle) * speed;
@@ -16,6 +16,12 @@ class Projectile {
     this.dead = false;
     this.prevX = x;
     this.prevY = y;
+    // optional behaviors (railgun pierce, flak AOE, status on hit)
+    this.pierce = !!opts.pierce;
+    this.aoe = opts.aoe || 0;
+    this.status = opts.status || null;
+    this.hitSet = this.pierce ? new Set() : null;
+    this.aoeDone = false;
   }
   update(dt, game) {
     this.prevX = this.x;

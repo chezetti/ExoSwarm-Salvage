@@ -1,11 +1,14 @@
 import { TAU, clamp, rand, dist, angleTo, angleDiff } from '../core/utils.js';
 import { Sound } from '../core/audio.js';
 import { Input } from '../core/input.js';
-import { WORLD_W, WORLD_H, RESOURCE_TYPES, WEAPONS } from '../config/data.js';
+import { WORLD_W, WORLD_H, RESOURCE_TYPES, WEAPONS, DEVICES } from '../config/data.js';
 import { burst } from './particles.js';
 import { Projectile } from './projectile.js';
 import { Turret } from '../world/turret.js';
 import { Mine } from '../world/mine.js';
+import { tickStatuses, applyStatus } from '../systems/status.js';
+import { Drone } from '../world/drone.js';
+import { Decoy } from '../world/decoy.js';
 
 /* =============================== PLAYER ================================= */
 class Player {
@@ -29,9 +32,13 @@ class Player {
     this.carry = []; // array of resource type keys
     this.signal = 100;
     this.aim = 0;
-    this.weaponKey = 'pulse';
+    // weapons/devices come from the station loadout (sanitized against config)
+    const lo = m.loadout || {};
+    this.slots = (lo.weapons || ['pulse', 'shotgun', 'arc']).filter((k) => WEAPONS[k]).slice(0, 3);
+    if (this.slots.length === 0) this.slots = ['pulse', 'shotgun', 'arc'];
+    this.weaponKey = this.slots[0];
     this.weapons = {};
-    for (const k in WEAPONS) {
+    for (const k of this.slots) {
       const w = WEAPONS[k];
       this.weapons[k] = {
         def: w,
@@ -42,13 +49,21 @@ class Player {
         cooldownT: 0,
       };
     }
+    this.deviceSlots = (lo.devices || ['turret', 'shield', 'scanner', 'mine'])
+      .filter((k) => DEVICES[k])
+      .slice(0, 4);
+    if (this.deviceSlots.length === 0) this.deviceSlots = ['turret', 'shield', 'scanner', 'mine'];
     this.devCdMult = 1 - 0.15 * m.upgrades.deviceCooling;
-    this.dev = { turret: 0, shield: 0, scanner: 0, mine: 0 };
+    this.dev = {};
+    for (const k of this.deviceSlots) this.dev[k] = 0;
     this.shield = null; // {hp, t}
     this.invuln = 0;
     this.dead = false;
     this.hitFlash = 0;
     this.muzzle = 0;
+    this.statuses = {};
+    this.speedMult = 1;
+    this.armorShred = 0;
   }
   carryWeight() {
     let w = 0;
@@ -74,9 +89,12 @@ class Player {
       mx /= len;
       my /= len;
     }
+    tickStatuses(this, dt, g);
+    if (this.dead) return; // burn tick can kill
     let spd =
       this.speed * (1 - ((0.04 * this.carryWeight()) / Math.max(1, this.carryCapacity)) * 4);
     spd = Math.max(this.speed * 0.7, spd);
+    spd *= this.speedMult;
 
     this.dashCd = Math.max(0, this.dashCd - dt);
     if (inp.wasPressed('Shift') && this.dashCd <= 0 && this.energy >= 25 && len > 0) {
@@ -108,10 +126,10 @@ class Player {
       g.camera.toWorldY(inp.mouseY)
     );
 
-    // weapon switching
-    if (inp.wasPressed('1')) this.switchWeapon('pulse');
-    if (inp.wasPressed('2')) this.switchWeapon('shotgun');
-    if (inp.wasPressed('3')) this.switchWeapon('arc');
+    // weapon switching (loadout slots 1/2/3)
+    if (inp.wasPressed('1') && this.slots[0]) this.switchWeapon(this.slots[0]);
+    if (inp.wasPressed('2') && this.slots[1]) this.switchWeapon(this.slots[1]);
+    if (inp.wasPressed('3') && this.slots[2]) this.switchWeapon(this.slots[2]);
 
     // weapon update
     const ws = this.weapons[this.weaponKey];
@@ -144,29 +162,11 @@ class Player {
     // device cooldowns
     for (const k in this.dev) this.dev[k] = Math.max(0, this.dev[k] - dt);
 
-    // devices
-    if (inp.wasPressed('q') && this.dev.turret <= 0) {
-      this.dev.turret = 25 * this.devCdMult;
-      g.turrets.push(
-        new Turret(g, this.x + Math.cos(this.aim) * 30, this.y + Math.sin(this.aim) * 30, 25, false)
-      );
-      Sound.device();
-    }
-    if (inp.wasPressed('f') && this.dev.shield <= 0) {
-      this.dev.shield = 18 * this.devCdMult;
-      this.shield = { hp: 80, max: 80, t: 4 };
-      Sound.device();
-    }
-    if (inp.wasPressed('c') && this.dev.scanner <= 0) {
-      this.dev.scanner = 12 * this.devCdMult;
-      g.scanPulse = { x: this.x, y: this.y, r: 0, max: 620 };
-      g.scanRevealT = 5;
-      Sound.device();
-    }
-    if (inp.wasPressed('x') && this.dev.mine <= 0) {
-      this.dev.mine = 10 * this.devCdMult;
-      g.mines.push(new Mine(g, this.x, this.y));
-      Sound.device();
+    // devices (loadout slots on Q/F/C/X, generic dispatch via DEVICES config)
+    const devKeys = ['q', 'f', 'c', 'x'];
+    for (let i = 0; i < this.deviceSlots.length; i++) {
+      const dk = this.deviceSlots[i];
+      if (inp.wasPressed(devKeys[i]) && this.dev[dk] <= 0) this.useDevice(dk);
     }
 
     // resource magnet + auto pickup of light resources
@@ -188,6 +188,62 @@ class Player {
     if (this.weaponKey !== k) {
       this.weaponKey = k;
       Sound.reload();
+    }
+  }
+  useDevice(key) {
+    const g = this.game,
+      def = DEVICES[key];
+    if (!def) return;
+    this.dev[key] = def.cd * this.devCdMult;
+    switch (key) {
+      case 'turret':
+        g.turrets.push(
+          new Turret(
+            g,
+            this.x + Math.cos(this.aim) * 30,
+            this.y + Math.sin(this.aim) * 30,
+            25,
+            false
+          )
+        );
+        Sound.device();
+        break;
+      case 'shield':
+        this.shield = { hp: 80, max: 80, t: 4 };
+        Sound.device();
+        break;
+      case 'scanner':
+        g.scanPulse = { x: this.x, y: this.y, r: 0, max: 620 };
+        g.scanRevealT = 5;
+        Sound.device();
+        break;
+      case 'mine':
+        g.mines.push(new Mine(g, this.x, this.y));
+        Sound.device();
+        break;
+      case 'drone':
+        g.drones.push(new Drone(g, this.x, this.y, def.dur));
+        Sound.device();
+        break;
+      case 'decoy':
+        g.decoys.push(
+          new Decoy(g, this.x + Math.cos(this.aim) * 50, this.y + Math.sin(this.aim) * 50, def.dur)
+        );
+        Sound.device();
+        break;
+      case 'emp': {
+        g.empPulse = { x: this.x, y: this.y, r: 0, max: def.radius };
+        Sound.emp();
+        g.camera.addShake(5);
+        g.enemyGrid.queryCircle(this.x, this.y, def.radius + 30, (e) => {
+          if (!e.dead && dist(this.x, this.y, e.x, e.y) < def.radius + e.radius) {
+            applyStatus(e, 'stun');
+            e.takeDamage(12, this.x, this.y);
+          }
+          return false;
+        });
+        break;
+      }
     }
   }
   fire(dt, ws) {
@@ -233,13 +289,24 @@ class Player {
           def.projRadius,
           def.color,
           true,
-          def.key === 'shotgun' ? 320 : 700
+          def.range || 700,
+          {
+            pierce: def.pierce,
+            aoe: def.aoe,
+            status: def.status,
+          }
         )
       );
     }
     if (def.key === 'shotgun') {
       Sound.shotgun();
       g.camera.addShake(3);
+    } else if (def.key === 'railgun') {
+      Sound.railgun();
+      g.camera.addShake(4);
+    } else if (def.key === 'flak') {
+      Sound.flak();
+      g.camera.addShake(2);
     } else {
       Sound.shoot();
       g.camera.addShake(0.7);

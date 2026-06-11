@@ -3,6 +3,7 @@ import { Sound } from '../core/audio.js';
 import { burst } from './particles.js';
 import { Enemy } from './enemy.js';
 import { ResourceNode } from '../world/resource.js';
+import { spawnDamageNumber } from './damageNumber.js';
 
 /* ================================ HIVE ================================== */
 class Hive {
@@ -58,7 +59,16 @@ class Hive {
         const sx = this.x + Math.cos(a) * (this.radius + 20);
         const sy = this.y + Math.sin(a) * (this.radius + 20);
         if (dist(sx, sy, g.player.x, g.player.y) > 180)
-          g.enemies.push(new Enemy(g, pick(pool), sx, sy, this.level));
+          g.enemies.push(
+            new Enemy(
+              g,
+              pick(pool),
+              sx,
+              sy,
+              this.level,
+              Math.random() < 0.05 * this.level ? pick(['splitter', 'armored', 'frenzied']) : null
+            )
+          );
       }
     }
     // signal pressure handled in Game
@@ -85,6 +95,14 @@ class Hive {
     this.hp -= dmg;
     this.hitFlash = 1;
     Sound.hit();
+    spawnDamageNumber(
+      this.game,
+      this.x,
+      this.y - this.radius - 8,
+      Math.max(1, Math.round(dmg)),
+      dmg >= 40 ? '#ffe27a' : '#ffe9a8',
+      dmg >= 40
+    );
     if (this.hp <= 0) this.destroy();
   }
   destroy() {
