@@ -15,7 +15,17 @@ import {
 import { Hazard } from './world/hazard.js';
 import { Boss } from './entities/boss.js';
 import { WEAPON_CHOICES, DEVICE_CHOICES, cycleChoice } from './config/loadouts.js';
-import { burst } from './entities/particles.js';
+import { burst, Particle } from './entities/particles.js';
+import { Pool } from './systems/pool.js';
+import * as Profiles from './systems/profiles.js';
+import { drawClone } from './entities/clone.js';
+import {
+  BODY_COLORS,
+  VISOR_COLORS,
+  ACCENT_COLORS,
+  SHAPES,
+  defaultAppearance,
+} from './config/appearance.js';
 import { applyStatus } from './systems/status.js';
 import { Player } from './entities/player.js';
 import { Enemy } from './entities/enemy.js';
@@ -26,7 +36,9 @@ import { Outpost } from './world/outpost.js';
 import { Mission } from './systems/mission.js';
 import { SpatialGrid } from './systems/spatialGrid.js';
 import { Music } from './systems/music.js';
+import { AudioEngine } from './systems/audioEngine.js';
 import { tickCombo } from './systems/combo.js';
+import * as Overdrive from './systems/overdrive.js';
 
 /* ================================ GAME ================================== */
 const SAVE_KEY = 'exoswarm_salvage_save_v1';
@@ -54,6 +66,10 @@ function defaultMeta() {
     bestScore: 0,
     totalKills: 0,
     totalHives: 0,
+    bestCombo: 0,
+    bossKills: 0,
+    appearance: defaultAppearance(),
+    settings: { master: 0.8, music: 0.6, sfx: 0.9, fxScale: 1 },
     priceMods: { bioResin: 1, sporeFiber: 1, salvageChips: 1, softQuartz: 1, hiveEnzymes: 1 },
   };
 }
@@ -63,9 +79,13 @@ class Game {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.camera = new Camera();
-    this.state = 'station'; // station | playing | paused | death | victory
+    // login | station | playing | paused | death | victory | customize
+    this.state = 'login';
+    this.activeProfile = null;
     this.meta = defaultMeta();
-    this.load();
+    this.loginMode = 'select'; // 'select' | 'create' | 'password'
+    this.loginTarget = null; // profile awaiting password
+    Profiles.migrateLegacy(); // fold any legacy single save into a Default profile
     this.toasts = [];
     this.uiButtons = [];
     this.uiBlocksFire = false;
@@ -85,14 +105,19 @@ class Game {
     this.canvas.height = window.innerHeight;
   }
   /* ------------------------------ SAVE / LOAD --------------------------- */
+  saveKey() {
+    return this.activeProfile ? Profiles.saveKeyFor(this.activeProfile.id) : SAVE_KEY;
+  }
   save() {
+    if (!this.activeProfile) return; // nothing to persist until a profile is active
     try {
-      localStorage.setItem(SAVE_KEY, JSON.stringify(this.meta));
+      localStorage.setItem(this.saveKey(), JSON.stringify(this.meta));
     } catch (e) {}
   }
   load() {
+    this.meta = defaultMeta(); // start clean so profiles never bleed into each other
     try {
-      const raw = localStorage.getItem(SAVE_KEY);
+      const raw = localStorage.getItem(this.saveKey());
       if (raw) {
         const data = JSON.parse(raw);
         const def = defaultMeta();
@@ -166,6 +191,11 @@ class Game {
     this.turrets = [];
     this.mines = [];
     this.enemyGrid = new SpatialGrid(128);
+    this.particlePool = new Pool(
+      () => new Particle(0, 0, 0, 0, 0, 1, '#fff'),
+      (p, x, y, vx, vy, life, size, color) => p.reset(x, y, vx, vy, life, size, color)
+    );
+    if (this.fxScale == null) this.fxScale = 1;
     this.damageNumbers = [];
     this.drones = [];
     this.decoys = [];
@@ -201,7 +231,10 @@ class Game {
       bossSlain: false,
       bossT: 0,
       bossKillT: 0,
+      odCharge: 0,
+      odActive: 0,
     };
+    this.fxScale = (this.meta.settings && this.meta.settings.fxScale) || 1;
     this.biome = pick(BIOMES);
     this.boss = null;
 
@@ -332,6 +365,8 @@ class Game {
     m.runCount++;
     m.totalKills += r.kills;
     m.totalHives += r.hivesDestroyed;
+    m.bestCombo = Math.max(m.bestCombo || 0, r.maxCombo || 0);
+    if (r.bossSlain) m.bossKills = (m.bossKills || 0) + 1;
     const score = r.score + r.deliveredValue + (this.mission.complete ? 100 : 0);
     m.bestScore = Math.max(m.bestScore, score);
     this.rerollPrices();
@@ -366,17 +401,37 @@ class Game {
     if (this.toasts.length > 4) this.toasts.shift();
   }
   /* ------------------------------ MAIN LOOP ------------------------------ */
+  // True if a world point is within (padded) view — used to cull offscreen draws.
+  inView(x, y, pad = 0) {
+    const sx = this.camera.wx(x),
+      sy = this.camera.wy(y);
+    return (
+      sx >= -pad && sy >= -pad && sx <= this.canvas.width + pad && sy <= this.canvas.height + pad
+    );
+  }
   loop(t) {
     const dt = Math.min(0.05, (t - this.lastTime) / 1000);
     this.lastTime = t;
-    this.update(dt);
-    this.draw();
-    Input.endFrame();
-    requestAnimationFrame((tt) => this.loop(tt));
+    // Error boundary: a stray throw must never kill the rAF chain (which would
+    // freeze input permanently). Surface it once via a toast and keep running.
+    this._errToastT = Math.max(0, (this._errToastT || 0) - dt);
+    try {
+      this.update(dt);
+      this.draw();
+    } catch (e) {
+      if (this._errToastT <= 0) {
+        this.toast('⚠ Recovered from an error');
+        this._errToastT = 3;
+      }
+    } finally {
+      Input.endFrame();
+      requestAnimationFrame((tt) => this.loop(tt));
+    }
   }
   update(dt) {
     this.uiBlocksFire = this.state !== 'playing';
     Music.sync(this); // adaptive soundtrack follows game state + threat
+    this.applySettings(); // cheap; takes effect once the audio engine is ready
     for (const ts of this.toasts) ts.t -= dt;
     this.toasts = this.toasts.filter((ts) => ts.t > 0);
 
@@ -429,13 +484,21 @@ class Game {
     const dt = this.hitstopT > 0 ? rdt * 0.15 : rdt;
     this.hitstopT = Math.max(0, this.hitstopT - rdt);
     tickCombo(this.run, rdt); // combo decays in real time, even during hitstop
+    Overdrive.tickOverdrive(this.run, rdt);
     const r = this.run,
       p = this.player;
+    r.maxCombo = Math.max(r.maxCombo || 0, r.combo || 0);
     r.time += dt;
 
     if (Input.wasPressed('Escape')) {
       this.state = 'paused';
       return;
+    }
+    // Overdrive ultimate (Space) — full meter unleashes a fire-rate/damage surge
+    if (Input.wasPressed(' ') && Overdrive.activate(r)) {
+      this.toast('OVERDRIVE!');
+      Sound.alarm();
+      this.camera.addShake(5);
     }
     if (Input.wasPressed('m')) this.showMinimap = !this.showMinimap;
     if (Input.wasPressed('Tab')) this.showStats = !this.showStats;
@@ -670,7 +733,11 @@ class Game {
     }
 
     // particles
-    this.particles = this.particles.filter((pt) => pt.update(dt));
+    this.particles = this.particles.filter((pt) => {
+      if (pt.update(dt)) return true;
+      this.particlePool.release(pt); // recycle dead particles
+      return false;
+    });
     this.damageNumbers = this.damageNumbers.filter((dn) => dn.update(rdt));
     // cleanup
     this.projectiles = this.projectiles.filter((x) => !x.dead);
@@ -695,6 +762,19 @@ class Game {
       W = this.canvas.width,
       H = this.canvas.height;
     ctx.clearRect(0, 0, W, H);
+    this.syncLoginOverlay();
+    if (this.state === 'login') {
+      this.drawLogin();
+      return;
+    }
+    if (this.state === 'customize') {
+      this.drawCustomize();
+      return;
+    }
+    if (this.state === 'settings') {
+      this.drawSettings();
+      return;
+    }
     if (this.state === 'station') {
       this.drawStation();
       return;
@@ -708,6 +788,316 @@ class Game {
     if (this.state === 'paused') this.drawPause();
     if (this.state === 'death') this.drawEnd(true);
     if (this.state === 'victory') this.drawEnd(false);
+  }
+  /* ------------------------------ LOGIN ---------------------------------- */
+  // Show/position the HTML <input> overlay only during create/password entry,
+  // and hide it otherwise so it never steals keyboard focus during play.
+  syncLoginOverlay() {
+    const ov = typeof document !== 'undefined' && document.getElementById('loginOverlay');
+    if (!ov) return;
+    const show =
+      this.state === 'login' && (this.loginMode === 'create' || this.loginMode === 'password');
+    ov.style.display = show ? 'flex' : 'none';
+    const nameEl = document.getElementById('loginName');
+    if (nameEl) nameEl.style.display = this.loginMode === 'create' ? 'block' : 'none';
+  }
+  selectProfile(profile) {
+    if (profile.hash) {
+      this.loginMode = 'password';
+      this.loginTarget = profile;
+      const pass = document.getElementById('loginPass');
+      if (pass) {
+        pass.value = '';
+        pass.focus();
+      }
+    } else {
+      this.enterProfile(profile);
+    }
+  }
+  enterProfile(profile) {
+    this.activeProfile = profile;
+    this.load();
+    this.loginMode = 'select';
+    this.loginTarget = null;
+    this.state = 'station';
+    Sound.deliver();
+  }
+  async confirmPassword() {
+    const pass = document.getElementById('loginPass');
+    const ok = await Profiles.verify(this.loginTarget, pass ? pass.value : '');
+    if (ok) this.enterProfile(this.loginTarget);
+    else this.toast('Wrong password');
+  }
+  async createNewProfile() {
+    const nameEl = document.getElementById('loginName');
+    const passEl = document.getElementById('loginPass');
+    const name = nameEl ? nameEl.value.trim() : '';
+    if (!name) {
+      this.toast('Enter a profile name');
+      return;
+    }
+    if (!Profiles.cryptoAvailable() && passEl && passEl.value) {
+      this.toast('Password unavailable in this context');
+    }
+    const profile = await Profiles.createProfile(name, passEl ? passEl.value : '');
+    if (nameEl) nameEl.value = '';
+    if (passEl) passEl.value = '';
+    this.enterProfile(profile);
+  }
+  drawLogin() {
+    const ctx = this.ctx,
+      W = this.canvas.width,
+      H = this.canvas.height;
+    const bg = ctx.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#0a1418');
+    bg.addColorStop(1, '#05080a');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#7af5ff';
+    ctx.font = 'bold 30px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('EXOSWARM SALVAGE', W / 2, 90);
+    ctx.fillStyle = '#9fb6c4';
+    ctx.font = '13px monospace';
+    ctx.fillText('Select a clone profile', W / 2, 118);
+    ctx.textAlign = 'left';
+
+    if (this.loginMode === 'password' && this.loginTarget) {
+      ctx.fillStyle = '#dff6ff';
+      ctx.font = '14px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('Password for "' + this.loginTarget.name + '"', W / 2, H / 2 - 70);
+      ctx.textAlign = 'left';
+      this.button(
+        W / 2 - 130,
+        H / 2 + 10,
+        125,
+        40,
+        'ENTER',
+        () => this.confirmPassword(),
+        true,
+        '#2ee6a8'
+      );
+      this.button(W / 2 + 5, H / 2 + 10, 125, 40, 'CANCEL', () => {
+        this.loginMode = 'select';
+        this.loginTarget = null;
+      });
+      return;
+    }
+    if (this.loginMode === 'create') {
+      ctx.fillStyle = '#dff6ff';
+      ctx.font = '14px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('New profile — name + optional password', W / 2, H / 2 - 80);
+      ctx.textAlign = 'left';
+      this.button(
+        W / 2 - 130,
+        H / 2 + 30,
+        125,
+        40,
+        'CREATE',
+        () => this.createNewProfile(),
+        true,
+        '#2ee6a8'
+      );
+      this.button(W / 2 + 5, H / 2 + 30, 125, 40, 'CANCEL', () => (this.loginMode = 'select'));
+      return;
+    }
+
+    // profile cards
+    const profiles = Profiles.listProfiles();
+    const cardW = 280,
+      cardH = 70,
+      gap = 14;
+    let y = 160;
+    for (const p of profiles) {
+      const x = W / 2 - cardW / 2;
+      this.button(x, y, cardW - 44, cardH, '', () => this.selectProfile(p), true);
+      const save = this.readProfileMeta(p.id);
+      // avatar — the profile's actual clone, drawn procedurally
+      drawClone(ctx, x + 28, y + cardH / 2, save.appearance || defaultAppearance(), 1.1, 0, 0, 0);
+      ctx.fillStyle = '#dff6ff';
+      ctx.font = 'bold 14px monospace';
+      ctx.fillText(p.name + (p.hash ? '  🔒' : ''), x + 56, y + 28);
+      ctx.fillStyle = '#9fb6c4';
+      ctx.font = '11px monospace';
+      ctx.fillText(
+        'Best ' + (save.bestScore || 0) + ' • Runs ' + (save.runCount || 0),
+        x + 56,
+        y + 48
+      );
+      this.button(
+        x + cardW - 40,
+        y,
+        40,
+        cardH,
+        '✕',
+        () => this.deleteProfileConfirmed(p),
+        true,
+        '#ff8d8d'
+      );
+      y += cardH + gap;
+    }
+    this.button(
+      W / 2 - cardW / 2,
+      y + 4,
+      cardW,
+      44,
+      '+ NEW PROFILE',
+      () => {
+        this.loginMode = 'create';
+        const nameEl = document.getElementById('loginName');
+        if (nameEl) {
+          nameEl.value = '';
+          nameEl.focus();
+        }
+      },
+      true,
+      '#7af5ff'
+    );
+  }
+  readProfileMeta(id) {
+    try {
+      const raw = localStorage.getItem(Profiles.saveKeyFor(id));
+      if (raw) return JSON.parse(raw);
+    } catch (e) {}
+    return {};
+  }
+  deleteProfileConfirmed(p) {
+    Profiles.deleteProfile(p.id);
+    if (this.activeProfile && this.activeProfile.id === p.id) this.activeProfile = null;
+    Sound.hurt();
+  }
+  /* ---------------------------- CUSTOMIZE -------------------------------- */
+  swatchRow(label, y, colors, current, set) {
+    const ctx = this.ctx;
+    ctx.fillStyle = '#9fb6c4';
+    ctx.font = '12px monospace';
+    ctx.fillText(label, 60, y - 8);
+    let x = 60;
+    for (const c of colors) {
+      const sel = c === current;
+      ctx.fillStyle = c;
+      ctx.fillRect(x, y, 34, 26);
+      ctx.strokeStyle = sel ? '#ffffff' : 'rgba(0,0,0,0.4)';
+      ctx.lineWidth = sel ? 3 : 1;
+      ctx.strokeRect(x, y, 34, 26);
+      const hit =
+        Input.mouseX >= x && Input.mouseX <= x + 34 && Input.mouseY >= y && Input.mouseY <= y + 26;
+      if (hit && Input.mouseClicked) {
+        set(c);
+        this.save();
+        Sound.device();
+      }
+      x += 42;
+    }
+  }
+  drawCustomize() {
+    const ctx = this.ctx,
+      W = this.canvas.width,
+      H = this.canvas.height;
+    ctx.fillStyle = '#070d10';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#7af5ff';
+    ctx.font = 'bold 24px monospace';
+    ctx.fillText('CUSTOMIZE CLONE', 60, 56);
+    const ap = this.meta.appearance || (this.meta.appearance = defaultAppearance());
+    // live preview (large)
+    ctx.save();
+    drawClone(
+      ctx,
+      W - 220,
+      220,
+      ap,
+      5,
+      -Math.PI / 2 + Math.sin(performance.now() / 600) * 0.3,
+      0,
+      0
+    );
+    ctx.restore();
+    ctx.fillStyle = '#9fb6c4';
+    ctx.font = '12px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('preview', W - 220, 320);
+    ctx.textAlign = 'left';
+
+    this.swatchRow('BODY', 120, BODY_COLORS, ap.body, (c) => (ap.body = c));
+    this.swatchRow('VISOR', 190, VISOR_COLORS, ap.visor, (c) => (ap.visor = c));
+    this.swatchRow('ACCENT', 260, ACCENT_COLORS, ap.accent, (c) => (ap.accent = c));
+    // shape toggles
+    ctx.fillStyle = '#9fb6c4';
+    ctx.font = '12px monospace';
+    ctx.fillText('SHAPE', 60, 322);
+    let sx = 60;
+    for (const s of SHAPES) {
+      this.button(
+        sx,
+        330,
+        96,
+        30,
+        s,
+        () => {
+          ap.shape = s;
+          this.save();
+          Sound.device();
+        },
+        true,
+        s === ap.shape ? '#2ee6a8' : undefined
+      );
+      sx += 104;
+    }
+    this.button(60, H - 70, 180, 44, '◀ BACK', () => (this.state = 'station'), true, '#7af5ff');
+  }
+  /* ---------------------------- SETTINGS --------------------------------- */
+  applySettings() {
+    const s = this.meta.settings;
+    if (!s) return;
+    this.fxScale = s.fxScale;
+    if (AudioEngine.ready) {
+      if (AudioEngine.master) AudioEngine.master.gain.value = 0.5 * s.master;
+      if (Music.gain) Music.gain.gain.value = 0.3 * s.music * s.master;
+    }
+  }
+  stepperRow(label, y, value, set) {
+    const ctx = this.ctx;
+    ctx.fillStyle = '#dff6ff';
+    ctx.font = '14px monospace';
+    ctx.fillText(label, 60, y + 20);
+    this.button(280, y, 40, 30, '–', () => {
+      set(Math.max(0, Math.round((value - 0.1) * 10) / 10));
+      this.save();
+      this.applySettings();
+    });
+    ctx.fillStyle = '#ffd35d';
+    ctx.font = 'bold 14px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(Math.round(value * 100) + '%', 350, y + 20);
+    ctx.textAlign = 'left';
+    this.button(380, y, 40, 30, '+', () => {
+      set(Math.min(1, Math.round((value + 0.1) * 10) / 10));
+      this.save();
+      this.applySettings();
+    });
+  }
+  drawSettings() {
+    const ctx = this.ctx,
+      W = this.canvas.width,
+      H = this.canvas.height;
+    ctx.fillStyle = '#070d10';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#7af5ff';
+    ctx.font = 'bold 24px monospace';
+    ctx.fillText('SETTINGS', 60, 56);
+    const s =
+      this.meta.settings ||
+      (this.meta.settings = { master: 0.8, music: 0.6, sfx: 0.9, fxScale: 1 });
+    this.stepperRow('Master volume', 110, s.master, (v) => (s.master = v));
+    this.stepperRow('Music volume', 160, s.music, (v) => (s.music = v));
+    this.stepperRow('FX quality', 210, s.fxScale, (v) => (s.fxScale = v));
+    ctx.fillStyle = '#9fb6c4';
+    ctx.font = '11px monospace';
+    ctx.fillText('Lower FX quality if you see slowdowns in heavy fights.', 60, 320);
+    this.button(60, H - 70, 180, 44, '◀ BACK', () => (this.state = 'station'), true, '#7af5ff');
   }
   drawWorld() {
     const ctx = this.ctx,
@@ -796,11 +1186,11 @@ class Game {
     for (const tr of this.turrets) tr.draw(ctx, cam);
     for (const dc of this.decoys) dc.draw(ctx, cam);
     for (const dr of this.drones) dr.draw(ctx, cam);
-    for (const e of this.enemies) e.draw(ctx, cam);
+    for (const e of this.enemies) if (this.inView(e.x, e.y, 60)) e.draw(ctx, cam);
     if (this.boss) this.boss.draw(ctx, cam);
     if (!this.player.dead) this.player.draw(ctx, cam);
-    for (const pr of this.projectiles) pr.draw(ctx, cam);
-    for (const pr of this.enemyProjectiles) pr.draw(ctx, cam);
+    for (const pr of this.projectiles) if (this.inView(pr.x, pr.y, 40)) pr.draw(ctx, cam);
+    for (const pr of this.enemyProjectiles) if (this.inView(pr.x, pr.y, 40)) pr.draw(ctx, cam);
     // arc beam
     if (this.arcBeam) {
       ctx.strokeStyle = '#9ab2ff';
@@ -839,7 +1229,7 @@ class Game {
       ctx.stroke();
     }
     // particles
-    for (const pt of this.particles) pt.draw(ctx, cam);
+    for (const pt of this.particles) if (this.inView(pt.x, pt.y, 30)) pt.draw(ctx, cam);
     // floating damage numbers
     for (const dn of this.damageNumbers) dn.draw(ctx, cam);
     // spore storm visibility veil (fades in/out with the event timer)
@@ -1077,6 +1467,31 @@ class Game {
       ctx.fillRect(cxx - 30, 50, 60 * clamp(r.comboT / 4, 0, 1), 4);
     }
     ctx.textAlign = 'left';
+
+    // Overdrive (ULT) meter — bottom-center
+    {
+      const ow = 220,
+        ox2 = W / 2 - ow / 2,
+        oy2 = H - 40;
+      const active = r.odActive > 0;
+      const frac = active ? r.odActive / 6 : (r.odCharge || 0) / 100;
+      ctx.fillStyle = 'rgba(8,16,20,0.8)';
+      ctx.fillRect(ox2, oy2, ow, 12);
+      ctx.fillStyle = active ? '#ff5d8a' : r.odCharge >= 100 ? '#ffd35d' : '#6e8bff';
+      ctx.fillRect(ox2 + 1, oy2 + 1, (ow - 2) * clamp(frac, 0, 1), 10);
+      ctx.strokeStyle = 'rgba(180,220,230,0.35)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(ox2, oy2, ow, 12);
+      ctx.fillStyle = '#dff6ff';
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(
+        active ? 'OVERDRIVE!' : r.odCharge >= 100 ? 'OVERDRIVE READY [Space]' : 'OVERDRIVE',
+        W / 2,
+        oy2 + 9
+      );
+      ctx.textAlign = 'left';
+    }
 
     // toasts
     let ty = H - 120;
@@ -1359,6 +1774,34 @@ class Game {
         true
       );
     }
+
+    // top-right: profile actions
+    this.button(
+      W - 360,
+      30,
+      110,
+      30,
+      'CUSTOMIZE',
+      () => (this.state = 'customize'),
+      true,
+      '#b06bff'
+    );
+    this.button(W - 240, 30, 110, 30, 'SETTINGS', () => (this.state = 'settings'), true, '#ffd35d');
+    this.button(
+      W - 120,
+      30,
+      90,
+      30,
+      'SWITCH',
+      () => {
+        this.save();
+        this.activeProfile = null;
+        this.loginMode = 'select';
+        this.state = 'login';
+      },
+      true,
+      '#ff8d8d'
+    );
 
     // start button
     this.button(

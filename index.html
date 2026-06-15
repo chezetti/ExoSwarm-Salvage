@@ -8,6 +8,25 @@
   </head>
   <body>
     <canvas id="game"></canvas>
+    <!-- Text-entry overlay for the login screen (canvas can't accept text).
+         Shown only during profile create/password entry; hidden in-game so it
+         never steals keyboard focus from WASD. -->
+    <div id="loginOverlay">
+      <input
+        id="loginName"
+        type="text"
+        maxlength="20"
+        placeholder="Profile name"
+        autocomplete="off"
+      />
+      <input
+        id="loginPass"
+        type="password"
+        maxlength="40"
+        placeholder="Password (optional)"
+        autocomplete="off"
+      />
+    </div>
     <script type="module" src="src/main.js"></script>
   </body>
 </html>

@@ -153,6 +153,21 @@ const AudioEngine = {
         this.saw.triggerAttackRelease(60, 0.7, now() + 0.1, 0.6);
         this._noise(0.4, 0.7);
       },
+      homing: () => {
+        this.sine.triggerAttackRelease(520, 0.12, undefined, 0.4);
+        this.sine.triggerAttackRelease(760, 0.1, now() + 0.06, 0.3);
+      },
+      ricochet: () => {
+        this.square.triggerAttackRelease(1000, 0.04, undefined, 0.35);
+      },
+      cryo: () => {
+        this.sine.triggerAttackRelease(760, 0.2, undefined, 0.45);
+        this._noise(0.12, 0.25);
+      },
+      charge: () => {
+        this.saw.triggerAttackRelease(1400, 0.14, undefined, 0.5);
+        this.boom.triggerAttackRelease(80, 0.25, now() + 0.02, 0.7);
+      },
     };
   },
   play(name) {

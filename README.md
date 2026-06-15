@@ -33,8 +33,14 @@ adaptive soundtrack (lazy-loaded, with a raw Web Audio fallback).
 
 ## ✨ Features
 
-- 🎮 **Five weapons** — Pulse Rifle, Shotgun, Arc Projector (overheat), piercing Railgun and
-  burning Flak Launcher; pick three per loadout.
+- 👤 **Local profiles** — multiple password-gated save slots in your browser (hashed with the Web
+  Crypto API; no server, fully offline) — pick or create a profile at the login screen.
+- 🎨 **Skin customizer** — tune your clone's body/visor/accent colours and shape; the look drives
+  the in-game sprite and your profile avatar (all procedural Canvas, no image files).
+- 🎮 **Nine weapons** — Pulse Rifle, Shotgun, Arc Projector (overheat), piercing Railgun, burning
+  Flak, seeking **Seeker Pods**, wall-bouncing **Ricochet SMG**, freezing **Cryo Mortar** and a
+  hold-to-charge **Charge Beam**; pick three per loadout.
+- ⚡ **Overdrive ultimate** — kills charge a meter; unleash a fire-rate + damage surge with Space.
 - 🛠️ **Seven combat devices** — turret, energy shield, scanner, mine, orbiting drone, holographic
   decoy and EMP burst; pick four per loadout.
 - 👾 **Varied enemies** — Skitterling, Spore Mantis, Carapace Bull, Brood Warden, Hives — plus
@@ -77,22 +83,23 @@ npm run preview  # preview the production build locally
 
 ## 🎮 Controls
 
-| Action        | Key / input            |
-| ------------- | ---------------------- |
-| Move          | `W` `A` `S` `D`        |
-| Aim / fire    | Mouse / **LMB**        |
-| Dash          | `Shift`                |
-| Reload        | `R`                    |
-| Switch weapon | `1` `2` `3`            |
-| Turret        | `Q`                    |
-| Energy shield | `F`                    |
-| Scanner       | `C`                    |
-| Mine          | `X`                    |
-| Interact      | `E`                    |
-| Evacuate      | `V` (near the outpost) |
-| Map           | `M`                    |
-| Run stats     | `Tab`                  |
-| Pause         | `Esc`                  |
+| Action        | Key / input                                      |
+| ------------- | ------------------------------------------------ |
+| Move          | `W` `A` `S` `D`                                  |
+| Aim / fire    | Mouse / **LMB** (hold to charge the Charge Beam) |
+| Dash          | `Shift`                                          |
+| Reload        | `R`                                              |
+| Switch weapon | `1` `2` `3`                                      |
+| Overdrive     | `Space` (when full)                              |
+| Turret        | `Q`                                              |
+| Energy shield | `F`                                              |
+| Scanner       | `C`                                              |
+| Mine          | `X`                                              |
+| Interact      | `E`                                              |
+| Evacuate      | `V` (near the outpost)                           |
+| Map           | `M`                                              |
+| Run stats     | `Tab`                                            |
+| Pause         | `Esc`                                            |
 
 ## 🗺️ Gameplay loop
 
@@ -121,10 +128,12 @@ src/
 ├── config/
 │   ├── data.js            # weapons / enemies / resources / upgrades / missions /
 │   │                      #   statuses / devices / hazards / biomes
-│   └── loadouts.js        # station loadout choices
+│   ├── loadouts.js        # station loadout choices
+│   └── appearance.js      # skin palettes + default appearance
 ├── entities/
-│   ├── particles.js       # particle system
-│   ├── projectile.js      # projectiles (pierce / AOE / status payloads)
+│   ├── particles.js       # poolable particle system
+│   ├── projectile.js      # projectiles (pierce / AOE / status / homing / bounce / lob)
+│   ├── clone.js           # shared procedural clone renderer (player / preview / avatar)
 │   ├── damageNumber.js    # floating combat text
 │   ├── player.js          # Vanguard clone: movement, loadout weapons, devices
 │   ├── enemy.js           # swarm AI + elite variants
@@ -145,10 +154,14 @@ src/
     ├── audioEngine.js     # Tone.js SFX engine (pooled voices, lazy-loaded)
     ├── music.js           # adaptive soundtrack (threat / boss / station)
     ├── status.js          # burn / freeze / corrode / stun
-    └── combo.js           # kill-combo score multiplier
+    ├── combo.js           # kill-combo score multiplier
+    ├── overdrive.js       # Overdrive ultimate meter
+    ├── pool.js            # generic object pool (cuts GC churn)
+    └── profiles.js        # local profiles + Web Crypto password hashing
 ```
 
-Game states: `station` → `playing` → `paused` / `death` / `victory`.
+Game states: `login` → `station` → `playing` → `paused` / `death` / `victory` (+ `customize`,
+`settings`). The frame loop has an error boundary so a stray throw can't freeze input.
 
 Most entities receive the `Game` instance and reach siblings through it (`g.player`, `g.enemies`,
 `g.particles`, …) rather than importing each other directly. See [`CLAUDE.md`](CLAUDE.md) for the

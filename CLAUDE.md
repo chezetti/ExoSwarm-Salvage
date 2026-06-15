@@ -49,10 +49,12 @@ src/
 ├── config/
 │   ├── data.js            # static config: WORLD_W/H, RESOURCE_TYPES, WEAPONS, ENEMY_TYPES,
 │   │                      #   UPGRADES, MISSIONS, STATUS, DEVICES, HAZARDS, BIOMES
-│   └── loadouts.js        # station loadout choices + duplicate-free cycling helper
+│   ├── loadouts.js        # station loadout choices + duplicate-free cycling helper
+│   └── appearance.js      # skin palettes/shapes + defaultAppearance()
 ├── entities/
-│   ├── particles.js       # Particle class + burst() helper
-│   ├── projectile.js      # Projectile class (opts: pierce / aoe / status)
+│   ├── particles.js       # Particle class (poolable) + adaptive burst() helper
+│   ├── projectile.js      # Projectile (opts: pierce/aoe/status/homing/bounce/lob/fuse)
+│   ├── clone.js           # drawClone(): shared procedural clone renderer (player/preview/avatar)
 │   ├── damageNumber.js    # floating combat text (capped, off-screen culled)
 │   ├── player.js          # Player: movement, loadout weapons, generic device dispatch
 │   ├── enemy.js           # Enemy: melee/ranged/charger/warden AI + elite variants + statuses
@@ -73,8 +75,16 @@ src/
     ├── audioEngine.js     # Tone.js SFX engine (lazy-loaded, pooled voices)
     ├── music.js           # adaptive Transport-driven soundtrack (run/boss/station)
     ├── status.js          # burn/freeze/corrode/stun status effects
-    └── combo.js           # kill-combo score multiplier (pure math)
+    ├── combo.js           # kill-combo score multiplier (pure math)
+    ├── overdrive.js       # Overdrive ultimate meter (pure math)
+    ├── pool.js            # generic object pool (particles) to cut GC churn
+    └── profiles.js        # local profiles + Web Crypto password hashing
 ```
+
+The frame loop (`Game.loop`) is wrapped in an error boundary so a stray throw can't kill the rAF
+chain (which would freeze input); offscreen entities are draw-culled via `Game.inView`. New
+pure-logic modules are unit-tested under `tests/` (Vitest): spatialGrid, combo, status, pool,
+profiles, weapons (projectile behaviors), overdrive.
 
 Per-frame flow gotchas: `game.enemyGrid` is rebuilt in `updatePlaying` right after enemy updates —
 turrets/mines/drones/hazards/projectiles query it afterwards, so keep that ordering. Hitstop scales
@@ -100,15 +110,29 @@ check that the import graph is intact** after edits.
 
 ## Gameplay model (for reasoning about code)
 
-- **States** (`Game.state`): `station` → `playing` → `paused` / `death` / `victory`.
+- **States** (`Game.state`): `login` → `station` → `playing` → `paused` / `death` / `victory`,
+  plus `customize` and `settings` (both reached from the station). The game boots into `login`.
+- **Profiles / auth** (`systems/profiles.js`): named local profiles in `localStorage`
+  (`exoswarm_profiles_v1`), each with its own save key (`exoswarm_salvage_save_v1::<id>`). Optional
+  password is SHA-256-hashed via Web Crypto (never plaintext); password-less if Web Crypto is
+  unavailable. This is local save-slot gating, **not** real account security. A login-screen HTML
+  `<input>` overlay (`index.html`/`syncLoginOverlay`) handles text entry and is hidden during play.
 - **Loop**: drop a Vanguard clone on Morrow Fen with a random mission → fight the swarm, collect
   resources → deliver to the outpost Cargo Pad (light cargo carried by player, heavy by Mule-3) →
   evacuate from the outpost → spend credits on permanent station upgrades → repeat.
 - **Resources**: bioResin, sporeFiber, salvageChips, softQuartz, hiveEnzymes (see `RESOURCE_TYPES`).
   Each has a `weight`; carrying past `carryCapacity` blocks pickup. Heavy nodes (`weightHeavy()`)
   must go into the Mule.
-- **Weapons** (`WEAPONS`): `pulse` (slot 1), `shotgun` (slot 2), `arc` (slot 3, uses heat/overheat).
-- **Devices**: turret (Q), shield (F), scanner (C), mine (X), each on a cooldown.
+- **Weapons** (`WEAPONS`): pulse, shotgun, arc (heat/overheat), railgun (pierce), flak (AOE+burn),
+  homingLauncher (seeking), ricochet (bounces off bounds), cryoMortar (lobbed, freezes), chargeBeam
+  (hold-to-charge, fires on release). Behaviors live as `Projectile` opts (`pierce/aoe/status/
+homing/bounce/lob/fuse`). Loadout picks 3 weapons; appearance + settings live on the profile.
+- **Skins** (`config/appearance.js` + `entities/clone.js`): per-profile body/visor/accent/shape,
+  drawn by the shared `drawClone()` used by the player sprite, the customizer preview, and login
+  avatars. Procedural — no image assets.
+- **Overdrive** (`systems/overdrive.js`): kill-charged ultimate (Space) granting a temporary
+  fire-rate + damage surge; charge/timer tick on real dt like combo.
+- **Devices**: turret (Q), shield (F), scanner (C), mine (X), plus drone/decoy/EMP — each on a cooldown.
 - **Enemies** (`ENEMY_TYPES`): skitterling (melee), sporeMantis (ranged), carapaceBull (charger,
   armored), broodWarden (warden). Hives spawn them and level up to 3.
 - **Missions** (`MISSIONS`): resourceRun, hivePurge, outpostRecovery — each with a bonus objective
@@ -118,16 +142,19 @@ check that the import graph is intact** after edits.
 
 ## Controls
 
-WASD move · mouse aim · LMB fire · Shift dash · R reload · 1/2/3 switch weapon ·
-Q turret · F shield · C scanner · X mine · E interact · V evacuate (near outpost) ·
-M map · Tab run stats · Esc pause.
+WASD move · mouse aim · LMB fire (hold to charge the Charge Beam) · Shift dash · R reload ·
+1/2/3 switch weapon · Space Overdrive · Q/F/C/X devices · E interact · V evacuate (near outpost) ·
+M map · Tab run stats · Esc pause. Input keys off `e.code` (layout-independent — works on
+non-Latin keyboard layouts).
 
 ## Persistence
 
-Meta progression (credits, resources, upgrade levels, run count, best score) is saved to
-`localStorage` under the key `exoswarm_salvage_save_v1` (see `SAVE_KEY` / `defaultMeta` in
-`game.js`). If you change the meta shape, bump the key or handle migration so old saves don't
-crash `JSON.parse`/load.
+Meta progression (credits, resources, upgrade levels, loadout, appearance, settings, stats) is
+saved per profile under `exoswarm_salvage_save_v1::<profileId>` (see `Game.saveKey()` /
+`defaultMeta()` in `game.js`); the profile registry lives at `exoswarm_profiles_v1`. A legacy
+single save under `exoswarm_salvage_save_v1` is migrated once into a "Default" profile
+(`Profiles.migrateLegacy`). `load()` always starts from `defaultMeta()` then merges, so adding a
+new meta field is safe for old saves — never crashes `JSON.parse`/load.
 
 ## Conventions / gotchas
 

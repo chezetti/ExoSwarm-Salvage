@@ -3,6 +3,10 @@ import { TAU, clamp, rand } from '../core/utils.js';
 /* ============================= PARTICLES ================================ */
 class Particle {
   constructor(x, y, vx, vy, life, size, color, fade) {
+    this.reset(x, y, vx, vy, life, size, color, fade);
+  }
+  // reset() lets the Particle be recycled from a Pool without re-allocating.
+  reset(x, y, vx, vy, life, size, color, fade) {
     this.x = x;
     this.y = y;
     this.vx = vx;
@@ -12,6 +16,7 @@ class Particle {
     this.size = size;
     this.color = color;
     this.fade = fade !== false;
+    return this;
   }
   update(dt) {
     this.x += this.vx * dt;
@@ -33,20 +38,21 @@ class Particle {
 }
 
 function burst(game, x, y, color, n, speed, size, life) {
-  for (let i = 0; i < n; i++) {
+  // Adaptive FX budget: scale the count by the quality setting, and auto-thin
+  // when the particle pool is already busy (keeps frame time steady).
+  let count = Math.round(n * (game.fxScale != null ? game.fxScale : 1));
+  if (game.particles.length > 600) count = Math.floor(count * 0.5);
+  for (let i = 0; i < count; i++) {
     const a = rand(0, TAU),
       s = rand(speed * 0.3, speed);
-    game.particles.push(
-      new Particle(
-        x,
-        y,
-        Math.cos(a) * s,
-        Math.sin(a) * s,
-        rand(life * 0.5, life),
-        rand(size * 0.5, size),
-        color
-      )
-    );
+    const vx = Math.cos(a) * s,
+      vy = Math.sin(a) * s,
+      l = rand(life * 0.5, life),
+      sz = rand(size * 0.5, size);
+    const p = game.particlePool
+      ? game.particlePool.acquire(x, y, vx, vy, l, sz, color)
+      : new Particle(x, y, vx, vy, l, sz, color);
+    game.particles.push(p);
   }
 }
 
