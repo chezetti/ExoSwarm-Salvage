@@ -9,6 +9,9 @@ import { Mine } from '../world/mine.js';
 import { tickStatuses, applyStatus } from '../systems/status.js';
 import { Drone } from '../world/drone.js';
 import { Decoy } from '../world/decoy.js';
+import { drawClone } from './clone.js';
+import { defaultAppearance } from '../config/appearance.js';
+import { OD_FIRE_MULT, OD_DAMAGE_MULT } from '../systems/overdrive.js';
 
 /* =============================== PLAYER ================================= */
 class Player {
@@ -64,6 +67,7 @@ class Player {
     this.statuses = {};
     this.speedMult = 1;
     this.armorShred = 0;
+    this.appearance = game.meta.appearance || defaultAppearance();
   }
   carryWeight() {
     let w = 0;
@@ -153,6 +157,10 @@ class Player {
       Sound.reload();
     }
     if (inp.mouseDown && !g.uiBlocksFire) this.fire(dt, ws);
+    // charge weapons fire on release
+    if (def.charge && this._prevMouseDown && !inp.mouseDown && !g.uiBlocksFire)
+      this.releaseCharge(ws);
+    this._prevMouseDown = inp.mouseDown;
 
     // shield
     if (this.shield) {
@@ -186,6 +194,8 @@ class Player {
   }
   switchWeapon(k) {
     if (this.weaponKey !== k) {
+      const prev = this.weapons[this.weaponKey];
+      if (prev) prev.charge = 0; // drop any pending charge when swapping away
       this.weaponKey = k;
       Sound.reload();
     }
@@ -247,8 +257,19 @@ class Player {
     }
   }
   fire(dt, ws) {
-    const g = this.game,
-      def = ws.def;
+    const def = ws.def;
+    // charge weapon: build up while held, fire the burst on release (releaseCharge)
+    if (def.charge) {
+      if (ws.overheated) return;
+      ws.charge = Math.min(1, (ws.charge || 0) + dt / 0.8);
+      ws.heat += def.heatPerSec * dt * (0.5 + ws.charge);
+      if (ws.heat >= 100) {
+        ws.heat = 100;
+        ws.overheated = true;
+        Sound.hurt();
+      }
+      return;
+    }
     if (def.useHeat) {
       if (ws.overheated) return;
       ws.heat += def.heatPerSec * dt;
@@ -271,14 +292,30 @@ class Player {
       Sound.reload();
       return;
     }
-    ws.cooldownT = 1 / def.fireRate;
+    const od = this.game.run && this.game.run.odActive > 0;
+    ws.cooldownT = 1 / (def.fireRate * (od ? OD_FIRE_MULT : 1));
     ws.ammo--;
     this.muzzle = 1;
-    const dmg = def.damage * this.damageMult(def.key);
+    this.spawnShot(def, def.damage * this.damageMult(def.key) * (od ? OD_DAMAGE_MULT : 1));
+  }
+  // Build and launch a weapon's projectiles. chargeMul scales a charged shot.
+  spawnShot(def, dmg, chargeMul = 1) {
+    const g = this.game;
+    // lobbed weapons (cryo mortar) arc to the cursor and detonate on a fuse
+    let aimBase = this.aim,
+      lobTarget = null,
+      fuse = 0;
+    if (def.lob) {
+      const tx = g.camera.toWorldX(Input.mouseX),
+        ty = g.camera.toWorldY(Input.mouseY);
+      aimBase = Math.atan2(ty - this.y, tx - this.x);
+      lobTarget = { x: tx, y: ty };
+      fuse = Math.min(2, dist(this.x, this.y, tx, ty) / def.projSpeed);
+    }
     for (let i = 0; i < def.pellets; i++) {
-      const a = this.aim + rand(-def.spread, def.spread);
-      const ox = this.x + Math.cos(this.aim) * (this.radius + 6);
-      const oy = this.y + Math.sin(this.aim) * (this.radius + 6);
+      const a = aimBase + rand(-def.spread, def.spread);
+      const ox = this.x + Math.cos(aimBase) * (this.radius + 6);
+      const oy = this.y + Math.sin(aimBase) * (this.radius + 6);
       g.projectiles.push(
         new Projectile(
           ox,
@@ -286,17 +323,22 @@ class Player {
           a,
           def.projSpeed * rand(0.93, 1.07),
           dmg,
-          def.projRadius,
+          def.projRadius * chargeMul,
           def.color,
           true,
           def.range || 700,
           {
             pierce: def.pierce,
-            aoe: def.aoe,
+            aoe: def.aoe ? def.aoe * chargeMul : 0,
             status: def.status,
+            homing: def.homing,
+            bounce: def.bounce,
+            lob: def.lob,
+            fuse,
           }
         )
       );
+      if (lobTarget) break; // mortar fires a single shell
     }
     if (def.key === 'shotgun') {
       Sound.shotgun();
@@ -307,10 +349,36 @@ class Player {
     } else if (def.key === 'flak') {
       Sound.flak();
       g.camera.addShake(2);
+    } else if (def.key === 'homingLauncher') {
+      Sound.homing();
+      g.camera.addShake(1);
+    } else if (def.key === 'ricochet') {
+      Sound.ricochet();
+      g.camera.addShake(0.6);
+    } else if (def.key === 'cryoMortar') {
+      Sound.cryo();
+      g.camera.addShake(2);
+    } else if (def.key === 'chargeBeam') {
+      Sound.charge();
+      g.camera.addShake(2 + 3 * chargeMul);
     } else {
       Sound.shoot();
       g.camera.addShake(0.7);
     }
+  }
+  // Release a charged shot (called on mouse-up for charge weapons).
+  releaseCharge(ws) {
+    const def = ws.def;
+    if (!def.charge || ws.overheated) {
+      ws.charge = 0;
+      return;
+    }
+    const c = ws.charge || 0;
+    ws.charge = 0;
+    if (c < 0.15) return; // tap with no meaningful charge
+    this.muzzle = 1;
+    const mul = 1 + c * 2; // up to 3x at full charge
+    this.spawnShot(def, def.damage * mul, 1 + c);
   }
   fireArc(def) {
     const g = this.game;
@@ -455,40 +523,8 @@ class Player {
     ctx.beginPath();
     ctx.arc(x, y, this.radius + 14, 0, TAU);
     ctx.fill();
-    // body
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(this.aim);
-    // armored capsule
-    ctx.fillStyle = this.hitFlash > 0 ? '#ff9d9d' : '#9fb6c4';
-    ctx.strokeStyle = '#dff6ff';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, this.radius, this.radius * 0.78, 0, 0, TAU);
-    ctx.fill();
-    ctx.stroke();
-    // visor / facing
-    ctx.fillStyle = '#1ee2ff';
-    ctx.beginPath();
-    ctx.moveTo(this.radius + 2, 0);
-    ctx.lineTo(this.radius - 7, -5);
-    ctx.lineTo(this.radius - 7, 5);
-    ctx.closePath();
-    ctx.fill();
-    // weapon barrel
-    ctx.strokeStyle = '#5a6f7d';
-    ctx.lineWidth = 5;
-    ctx.beginPath();
-    ctx.moveTo(4, 0);
-    ctx.lineTo(this.radius + 9, 0);
-    ctx.stroke();
-    if (this.muzzle > 0) {
-      ctx.fillStyle = 'rgba(255,255,200,' + this.muzzle * 0.8 + ')';
-      ctx.beginPath();
-      ctx.arc(this.radius + 10, 0, 5 * this.muzzle, 0, TAU);
-      ctx.fill();
-    }
-    ctx.restore();
+    // body (procedural, driven by the profile's appearance)
+    drawClone(ctx, x, y, this.appearance, 1, this.aim, this.hitFlash, this.muzzle);
     // shield
     if (this.shield) {
       const a = 0.25 + 0.35 * (this.shield.hp / this.shield.max);

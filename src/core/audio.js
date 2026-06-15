@@ -136,6 +136,24 @@ const Sound = {
     this.noise(0.4, 0.7);
     this.blip(60, 0.6, 'sawtooth', 0.5, -20);
   },
+  homing() {
+    if (AudioEngine.ready) return AudioEngine.play('homing');
+    this.blip(520, 0.12, 'sine', 0.25, 250);
+    this.noise(0.08, 0.2);
+  },
+  ricochet() {
+    if (AudioEngine.ready) return AudioEngine.play('ricochet');
+    this.blip(900, 0.05, 'square', 0.18, -200);
+  },
+  cryo() {
+    if (AudioEngine.ready) return AudioEngine.play('cryo');
+    this.blip(700, 0.18, 'sine', 0.3, -300);
+    this.noise(0.1, 0.2);
+  },
+  charge() {
+    if (AudioEngine.ready) return AudioEngine.play('charge');
+    this.blip(300, 0.2, 'sawtooth', 0.3, 900);
+  },
 };
 
 export { Sound };

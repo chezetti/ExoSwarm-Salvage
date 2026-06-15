@@ -7,6 +7,7 @@ import { ResourceNode } from '../world/resource.js';
 import { spawnDamageNumber } from './damageNumber.js';
 import { registerKill } from '../systems/combo.js';
 import { tickStatuses } from '../systems/status.js';
+import { addCharge } from '../systems/overdrive.js';
 
 /* =============================== ENEMY ================================== */
 class Enemy {
@@ -294,6 +295,7 @@ class Enemy {
     const g = this.game;
     g.run.kills++;
     registerKill(g.run);
+    addCharge(g.run, this.elite ? 12 : 5); // build the Overdrive meter
     g.run.score += Math.round(this.def.score * (this.elite ? 3 : 1) * g.run.comboMult);
     g.hitstop(
       this.elite || this.def.kind === 'charger' || this.def.kind === 'warden' ? 0.05 : 0.018
