@@ -88,7 +88,8 @@ function drawIcon(ctx, key, cx, cy, size, color) {
       ctx.lineTo(s * 0.8, -s * 0.2);
       ctx.stroke();
       break;
-    case 'cryoMortar': { // shell + snowflake
+    case 'cryoMortar': {
+      // shell + snowflake
       ctx.beginPath();
       ctx.arc(0, 0, s * 0.5, 0, TAU);
       ctx.stroke();

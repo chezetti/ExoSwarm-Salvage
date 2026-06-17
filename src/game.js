@@ -43,6 +43,7 @@ import { makeRng, randIn, randIntIn, pickIn } from './systems/rng.js';
 import { CLASSES, CLASS_KEYS } from './config/classes.js';
 import { drawIcon, iconColor } from './ui/icons.js';
 import { drawAbilityPreview } from './ui/abilityPreview.js';
+import { Planet } from './ui/planet.js';
 import { MODIFIERS, MODIFIER_KEYS, aggregate } from './config/modifiers.js';
 
 /* ================================ GAME ================================== */
@@ -1167,11 +1168,20 @@ class Game {
         this.save();
         Sound.device();
       }
-      this.button(x, y, cardW, cardH, '', () => {
-        this.meta.class = key;
-        this.save();
-        Sound.device();
-      }, true, sel ? '#2ee6a8' : '#6e8bff');
+      this.button(
+        x,
+        y,
+        cardW,
+        cardH,
+        '',
+        () => {
+          this.meta.class = key;
+          this.save();
+          Sound.device();
+        },
+        true,
+        sel ? '#2ee6a8' : '#6e8bff'
+      );
       const mid = x + cardW / 2;
       drawClone(ctx, mid, y + 40, this.meta.appearance || defaultAppearance(), 1.6, 0, 0);
       ctx.fillStyle = sel ? '#2ee6a8' : '#dff6ff';
@@ -1913,7 +1923,7 @@ class Game {
               : def.useHeat
                 ? 'HEAT'
                 : '';
-    const rof = def.useHeat ? (def.tickRate || 8) : def.fireRate;
+    const rof = def.useHeat ? def.tickRate || 8 : def.fireRate;
     return 'DMG ' + def.damage + ' · ROF ' + rof + (tag ? ' · ' + tag : '');
   }
   deviceStat(def) {
@@ -1960,22 +1970,11 @@ class Game {
       ctx.fillStyle = 'rgba(200,230,255,' + (0.15 + tw * 0.3) + ')';
       ctx.fillRect(sx, sy, 1.5, 1.5);
     }
-    // planet
-    const px = W * 0.85,
-      py = H * 0.8;
-    const pg = ctx.createRadialGradient(px - 30, py - 30, 20, px, py, 160);
-    pg.addColorStop(0, '#1f5a48');
-    pg.addColorStop(1, '#0a2018');
-    ctx.fillStyle = pg;
-    ctx.beginPath();
-    ctx.arc(px, py, 160, 0, TAU);
-    ctx.fill();
-    ctx.fillStyle = 'rgba(93,255,160,0.12)';
-    for (let i = 0; i < 6; i++) {
-      ctx.beginPath();
-      ctx.ellipse(px + Math.sin(i * 2.3) * 80, py + Math.cos(i * 1.7) * 80, 38, 14, i, 0, TAU);
-      ctx.fill();
-    }
+    // living planet (procedural, layered; surface baked once then animated)
+    if (!this.planet) this.planet = new Planet(170);
+    const reducedMotion = false; // no reduced-motion setting in this build
+    this.planet.update(1 / 60, reducedMotion);
+    this.planet.draw(ctx, W * 0.82, H * 0.78, reducedMotion);
 
     // header
     ctx.fillStyle = '#7af5ff';
@@ -2060,10 +2059,24 @@ class Game {
       const cx2 = 40 + i * cstep,
         cy2 = loy + 10;
       this.button(cx2, cy2, cw, ch, '', () => {
-        lo.weapons[wi] = cycleChoice(WEAPON_CHOICES, lo.weapons[wi], 1, lo.weapons.filter((_, j) => j !== wi));
+        lo.weapons[wi] = cycleChoice(
+          WEAPON_CHOICES,
+          lo.weapons[wi],
+          1,
+          lo.weapons.filter((_, j) => j !== wi)
+        );
         this.save();
       });
-      this.drawLoadoutCard(cx2, cy2, cw, ch, '' + (i + 1), def, this.weaponStat(def), iconColor(def));
+      this.drawLoadoutCard(
+        cx2,
+        cy2,
+        cw,
+        ch,
+        '' + (i + 1),
+        def,
+        this.weaponStat(def),
+        iconColor(def)
+      );
     }
     const devLabels = ['Q', 'F', 'C', 'X'];
     for (let i = 0; i < 4; i++) {
@@ -2072,10 +2085,24 @@ class Game {
       const cx2 = 40 + i * cstep,
         cy2 = loy + 10 + ch + 8;
       this.button(cx2, cy2, cw, ch, '', () => {
-        lo.devices[di] = cycleChoice(DEVICE_CHOICES, lo.devices[di], 1, lo.devices.filter((_, j) => j !== di));
+        lo.devices[di] = cycleChoice(
+          DEVICE_CHOICES,
+          lo.devices[di],
+          1,
+          lo.devices.filter((_, j) => j !== di)
+        );
         this.save();
       });
-      this.drawLoadoutCard(cx2, cy2, cw, ch, devLabels[i], def, this.deviceStat(def), iconColor(def));
+      this.drawLoadoutCard(
+        cx2,
+        cy2,
+        cw,
+        ch,
+        devLabels[i],
+        def,
+        this.deviceStat(def),
+        iconColor(def)
+      );
     }
 
     // top-right: profile actions
