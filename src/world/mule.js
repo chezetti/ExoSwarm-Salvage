@@ -114,10 +114,13 @@ class Mule {
       }
     }
     ctx.restore();
-    // label + hp
-    ctx.fillStyle = '#bfe6cf';
+    // label + cargo count + hp
+    const full = this.cargo.length >= this.cargoSlots;
     ctx.font = '10px monospace';
     ctx.textAlign = 'center';
+    ctx.fillStyle = full ? '#ffd35d' : '#bfe6cf';
+    ctx.fillText('CARGO ' + this.cargo.length + '/' + this.cargoSlots, x, y - this.radius - 24);
+    ctx.fillStyle = '#bfe6cf';
     ctx.fillText('MULE-3', x, y - this.radius - 12);
     const w = 44;
     ctx.fillStyle = 'rgba(0,0,0,0.5)';

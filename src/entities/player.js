@@ -203,7 +203,9 @@ class Player {
       if (inp.wasPressed(devKeys[i]) && this.dev[dk] <= 0) this.useDevice(dk);
     }
 
-    // resource magnet + auto pickup of light resources
+    // resource magnet + auto pickup of light resources. When the pack is full
+    // the node is left in place (no spammy "overloaded" toast) so the player can
+    // load it into the Mule with E instead.
     for (const r of g.resources) {
       if (r.dead || r.weightHeavy()) continue;
       const d = dist(this.x, this.y, r.x, r.y);
@@ -212,7 +214,11 @@ class Player {
         r.x += Math.cos(a) * 90 * dt;
         r.y += Math.sin(a) * 90 * dt;
       }
-      if (d < this.radius + 12) this.tryPickup(r);
+      if (
+        d < this.radius + 12 &&
+        this.carryWeight() + RESOURCE_TYPES[r.type].weight <= this.carryCapacity
+      )
+        this.tryPickup(r);
     }
 
     // interaction
@@ -515,14 +521,12 @@ class Player {
     burst(this.game, r.x, r.y, def.color, 6, 80, 3, 0.5);
     return true;
   }
-  interact() {
+  // Resolve what pressing E near a salvage node would do. A node routes to the
+  // Mule when it is HEAVY (always) or when the player's own pack is full — so the
+  // Mule is a useful bulk hauler every run, not just when soft quartz is around.
+  // Shared by interact() (the action) and the renderer (the prompt) to stay in sync.
+  interactTarget() {
     const g = this.game;
-    // 1) deliver at cargo pad
-    if (g.outpost.nearPad(this.x, this.y) && this.carry.length > 0) {
-      g.outpost.deliverFromPlayer(this);
-      return;
-    }
-    // 2) heavy resource -> mule
     let best = null,
       bd = Infinity;
     for (const r of g.resources) {
@@ -533,20 +537,43 @@ class Player {
         best = r;
       }
     }
-    if (best) {
-      if (best.weightHeavy()) {
-        if (g.mule && !g.mule.dead && dist(this.x, this.y, g.mule.x, g.mule.y) < 140) {
-          if (g.mule.loadCargo(best.type)) {
-            best.dead = true;
-            Sound.pickup();
-            burst(g, best.x, best.y, RESOURCE_TYPES[best.type].color, 8, 90, 3, 0.5);
-            g.toast(RESOURCE_TYPES[best.type].name + ' loaded into Mule-3');
-          } else g.toast('Mule-3 cargo slots are full');
-        } else g.toast('Heavy resource: bring Mule-3 closer');
-        return;
-      } else {
-        this.tryPickup(best);
-        return;
+    if (!best) return null;
+    const def = RESOURCE_TYPES[best.type];
+    const needsMule = best.weightHeavy() || this.carryWeight() + def.weight > this.carryCapacity;
+    if (!needsMule) return { res: best, kind: 'pickup' };
+    if (!(g.mule && !g.mule.dead && dist(this.x, this.y, g.mule.x, g.mule.y) < 140))
+      return { res: best, kind: 'muleFar' };
+    if (g.mule.cargo.length >= g.mule.cargoSlots) return { res: best, kind: 'muleFull' };
+    return { res: best, kind: 'muleLoad' };
+  }
+  interact() {
+    const g = this.game;
+    // 1) deliver at cargo pad
+    if (g.outpost.nearPad(this.x, this.y) && this.carry.length > 0) {
+      g.outpost.deliverFromPlayer(this);
+      return;
+    }
+    // 2) load a salvage node (into the pack, or the Mule when heavy / pack full)
+    const t = this.interactTarget();
+    if (t) {
+      const def = RESOURCE_TYPES[t.res.type];
+      switch (t.kind) {
+        case 'pickup':
+          this.tryPickup(t.res);
+          return;
+        case 'muleFar':
+          g.toast('Bring Mule-3 closer to load cargo');
+          return;
+        case 'muleFull':
+          g.toast('Mule-3 cargo full');
+          return;
+        case 'muleLoad':
+          g.mule.loadCargo(t.res.type);
+          t.res.dead = true;
+          Sound.pickup();
+          burst(g, t.res.x, t.res.y, def.color, 8, 90, 3, 0.5);
+          g.toast(def.name + ' loaded into Mule-3 (' + g.mule.cargo.length + '/' + g.mule.cargoSlots + ')');
+          return;
       }
     }
     // 3) activate reactor

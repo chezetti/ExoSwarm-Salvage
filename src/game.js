@@ -1493,6 +1493,28 @@ class Game {
       ctx.fillText('EVAC ' + this.evacT.toFixed(1) + 's', cam.wx(p.x), cam.wy(p.y) - p.radius - 34);
       ctx.textAlign = 'left';
     }
+    // contextual salvage-load prompt above the node the player would interact with
+    if (!this.player.dead) {
+      const it = this.player.interactTarget();
+      if (it && it.kind !== 'pickup') {
+        const txt =
+          it.kind === 'muleLoad'
+            ? 'LOAD MULE-3 [E]'
+            : it.kind === 'muleFull'
+              ? 'MULE-3 CARGO FULL'
+              : 'BRING MULE-3 CLOSER';
+        const px = cam.wx(it.res.x),
+          py = cam.wy(it.res.y) - it.res.radius - 18;
+        ctx.font = 'bold 11px monospace';
+        ctx.textAlign = 'center';
+        const tw = ctx.measureText(txt).width;
+        ctx.fillStyle = 'rgba(8,16,20,0.7)';
+        ctx.fillRect(px - tw / 2 - 5, py - 11, tw + 10, 15);
+        ctx.fillStyle = it.kind === 'muleLoad' ? '#aef5dc' : '#ffd35d';
+        ctx.fillText(txt, px, py);
+        ctx.textAlign = 'left';
+      }
+    }
   }
   /* ------------------------------ HUD ------------------------------------ */
   glitch() {
