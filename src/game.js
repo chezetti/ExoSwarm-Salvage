@@ -41,6 +41,9 @@ import { tickCombo } from './systems/combo.js';
 import * as Overdrive from './systems/overdrive.js';
 import { makeRng, randIn, randIntIn, pickIn } from './systems/rng.js';
 import { CLASSES, CLASS_KEYS } from './config/classes.js';
+import { drawIcon, iconColor } from './ui/icons.js';
+import { drawAbilityPreview } from './ui/abilityPreview.js';
+import { Planet } from './ui/planet.js';
 import { MODIFIERS, MODIFIER_KEYS, aggregate } from './config/modifiers.js';
 
 /* ================================ GAME ================================== */
@@ -455,7 +458,11 @@ class Game {
         this.updatePlaying(dt);
         break;
       case 'paused':
-        if (Input.wasPressed('Escape')) this.state = 'playing';
+        if (Input.wasPressed('Escape')) {
+          // Esc backs out of the settings sub-view first, then resumes
+          if (this.pauseView === 'settings') this.pauseView = 'menu';
+          else this.state = 'playing';
+        }
         break;
       case 'station':
       case 'death':
@@ -506,6 +513,7 @@ class Game {
     r.time += dt;
 
     if (Input.wasPressed('Escape')) {
+      this.pauseView = 'menu';
       this.state = 'paused';
       return;
     }
@@ -1103,14 +1111,13 @@ class Game {
       this.applySettings();
     });
   }
-  drawSettings() {
-    const ctx = this.ctx,
-      W = this.canvas.width,
-      H = this.canvas.height;
-    ctx.fillStyle = '#070d10';
-    ctx.fillRect(0, 0, W, H);
+  // Shared settings body (title + steppers + hint). Reused by the station
+  // SETTINGS screen and the in-game pause menu so the code lives in one place.
+  drawSettingsBody() {
+    const ctx = this.ctx;
     ctx.fillStyle = '#7af5ff';
     ctx.font = 'bold 24px monospace';
+    ctx.textAlign = 'left';
     ctx.fillText('SETTINGS', 60, 56);
     const s =
       this.meta.settings ||
@@ -1121,6 +1128,14 @@ class Game {
     ctx.fillStyle = '#9fb6c4';
     ctx.font = '11px monospace';
     ctx.fillText('Lower FX quality if you see slowdowns in heavy fights.', 60, 320);
+  }
+  drawSettings() {
+    const ctx = this.ctx,
+      W = this.canvas.width,
+      H = this.canvas.height;
+    ctx.fillStyle = '#070d10';
+    ctx.fillRect(0, 0, W, H);
+    this.drawSettingsBody();
     this.button(60, H - 70, 180, 44, '◀ BACK', () => (this.state = 'station'), true, '#7af5ff');
   }
   /* ---------------------------- CLASS SELECT ----------------------------- */
@@ -1133,20 +1148,31 @@ class Game {
     ctx.fillStyle = '#7af5ff';
     ctx.font = 'bold 24px monospace';
     ctx.fillText('SELECT CLONE CLASS', 60, 56);
+    ctx.fillStyle = '#9fb6c4';
+    ctx.font = '11px monospace';
+    ctx.fillText('Pick a class — keys 1–4 also select. Live ability preview on each card.', 60, 80);
     const cur = this.meta.class || 'vanguard';
-    const cardW = Math.min(260, (W - 200) / 4),
-      gap = 20,
+    const cardW = Math.min(268, (W - 120) / 4),
+      gap = 16,
+      cardH = 300,
       total = CLASS_KEYS.length * cardW + (CLASS_KEYS.length - 1) * gap;
     let x = (W - total) / 2;
-    const y = 120;
-    for (const key of CLASS_KEYS) {
+    const y = 104;
+    const tNow = performance.now() / 1000;
+    const hot = ['1', '2', '3', '4'];
+    CLASS_KEYS.forEach((key, idx) => {
       const def = CLASSES[key];
       const sel = key === cur;
+      if (Input.wasPressed(hot[idx])) {
+        this.meta.class = key;
+        this.save();
+        Sound.device();
+      }
       this.button(
         x,
         y,
         cardW,
-        180,
+        cardH,
         '',
         () => {
           this.meta.class = key;
@@ -1154,23 +1180,53 @@ class Game {
           Sound.device();
         },
         true,
-        sel ? '#2ee6a8' : undefined
+        sel ? '#2ee6a8' : '#6e8bff'
       );
-      // avatar + name + 2-line tradeoff + ability
-      drawClone(ctx, x + cardW / 2, y + 54, this.meta.appearance || defaultAppearance(), 1.8, 0, 0);
+      const mid = x + cardW / 2;
+      drawClone(ctx, mid, y + 40, this.meta.appearance || defaultAppearance(), 1.6, 0, 0);
       ctx.fillStyle = sel ? '#2ee6a8' : '#dff6ff';
-      ctx.font = 'bold 15px monospace';
+      ctx.font = 'bold 16px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(def.name, x + cardW / 2, y + 104);
+      ctx.fillText(def.name + (sel ? '  ✓' : ''), mid, y + 86);
+      ctx.textAlign = 'left';
+      // live ability preview viewport
+      drawAbilityPreview(ctx, def.ability.id, x + 16, y + 98, cardW - 32, 58, tNow);
+      // stat bars
+      const st = def.stats || { health: 0.6, speed: 0.6, armor: 0.6, device: 0.5 };
+      const rows = [
+        ['HEALTH', st.health, '#5dffa8'],
+        ['SPEED', st.speed, '#4df0ff'],
+        ['ARMOR', st.armor, '#7d8cff'],
+        ['DEVICE CD', st.device, '#ffc857'],
+      ];
+      let by = y + 172;
+      for (const [lbl, frac, col] of rows) {
+        this.miniBar(x + 16, by, cardW - 32, lbl, frac, col);
+        by += 20;
+      }
+      // ability block
+      ctx.fillStyle = '#ffd35d';
+      ctx.font = 'bold 11px monospace';
+      ctx.fillText(def.ability.name + ' [G]', x + 16, y + cardH - 24);
       ctx.fillStyle = '#9fb6c4';
       ctx.font = '10px monospace';
-      this.wrapText(def.desc, x + cardW / 2, y + 126, cardW - 20, 13);
-      ctx.fillStyle = '#ffd35d';
-      ctx.fillText('Ability: ' + def.ability.name + ' [G]', x + cardW / 2, y + 166);
-      ctx.textAlign = 'left';
+      const dur = def.ability.dur ? ' · ' + def.ability.dur + 's' : '';
+      ctx.fillText(def.ability.blurb + '  CD ' + def.ability.cd + 's' + dur, x + 16, y + cardH - 9);
       x += cardW + gap;
-    }
-    this.button(60, H - 70, 180, 44, '◀ BACK', () => (this.state = 'station'), true, '#7af5ff');
+    });
+    this.button(60, H - 60, 180, 40, '◀ BACK', () => (this.state = 'station'), true, '#7af5ff');
+  }
+  // small labelled stat bar (0..1) for the class cards
+  miniBar(x, y, w, label, frac, color) {
+    const ctx = this.ctx;
+    ctx.fillStyle = '#7da4b3';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(label, x, y - 2);
+    ctx.fillStyle = 'rgba(8,16,20,0.8)';
+    ctx.fillRect(x, y, w, 6);
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, w * clamp(frac, 0, 1), 6);
   }
   // tiny word-wrap helper for centered card text
   wrapText(text, cx, y, maxW, lh) {
@@ -1512,6 +1568,7 @@ class Game {
     ctx.fillRect(14, y, bw, 40);
     ctx.strokeStyle = 'rgba(180,220,230,0.35)';
     ctx.strokeRect(14, y, bw, 40);
+    drawIcon(ctx, def.key, 14 + bw - 20, y + 20, 26, iconColor(def));
     ctx.fillStyle = def.color;
     ctx.font = 'bold 12px monospace';
     ctx.fillText('[' + (p.slots.indexOf(p.weaponKey) + 1) + '] ' + def.name, 20, y + 16);
@@ -1531,19 +1588,24 @@ class Game {
 
     // devices (from the equipped loadout)
     const devKeyLabels = ['Q', 'F', 'C', 'X'];
-    const devs = p.deviceSlots.map((k, i) => [devKeyLabels[i], DEVICES[k].name, p.dev[k]]);
+    const devs = p.deviceSlots.map((k, i) => [devKeyLabels[i], k, p.dev[k]]);
     let dx = 14;
-    for (const [key, name, cd] of devs) {
+    for (const [key, dkey, cd] of devs) {
       const ready = cd <= 0;
       ctx.fillStyle = ready ? 'rgba(20,46,40,0.85)' : 'rgba(8,16,20,0.75)';
       ctx.fillRect(dx, y, 44, 34);
+      // device icon (dim while on cooldown)
+      drawIcon(ctx, dkey, dx + 30, y + 12, 18, ready ? iconColor(DEVICES[dkey]) : '#6f8693');
       ctx.strokeStyle = ready ? '#2ee6a8' : 'rgba(120,140,150,0.4)';
       ctx.strokeRect(dx, y, 44, 34);
       ctx.fillStyle = ready ? '#aef5dc' : '#7a8b99';
       ctx.font = 'bold 11px monospace';
       ctx.fillText(key, dx + 4, y + 13);
-      ctx.font = '9px monospace';
-      ctx.fillText(ready ? name : Math.ceil(cd) + 's', dx + 4, y + 27);
+      // cooldown seconds (bottom) when charging; icon conveys the device type
+      if (!ready) {
+        ctx.font = '9px monospace';
+        ctx.fillText(Math.ceil(cd) + 's', dx + 24, y + 31);
+      }
       dx += 48;
     }
     y += 42;
@@ -1610,13 +1672,43 @@ class Game {
     ctx.fillStyle = '#dff6ff';
     ctx.font = '12px monospace';
     ctx.fillText(this.mission.objectiveText(), W / 2, 45);
+    // threat: a drawn segmented bar clamped to the panel's inner width (never
+    // overflows). Label on the left, timer on the right, segments between.
     const tl = this.threatLevel();
-    ctx.fillStyle = tl >= 4 ? '#ff5d4d' : tl >= 2 ? '#ffd35d' : '#7af5ff';
-    ctx.fillText(
-      'THREAT ' + tl + '/5  ' + '█'.repeat(tl) + '░'.repeat(5 - tl) + '   ⏱ ' + fmtTime(r.time),
-      W / 2,
-      61
-    );
+    const pad = 14;
+    const innerL = W / 2 - mw / 2 + pad;
+    const innerR = W / 2 + mw / 2 - pad;
+    const threatColor = tl >= 4 ? '#ff4f5e' : tl >= 2 ? '#ffb02e' : '#7af5ff';
+    ctx.font = 'bold 12px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = threatColor;
+    ctx.fillText('THREAT ' + tl + '/5', innerL, 61);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#dff6ff';
+    ctx.fillText('⏱ ' + fmtTime(r.time), innerR, 61);
+    ctx.textAlign = 'left';
+    // segmented bar in the space between the two labels
+    const barX = innerL + 96;
+    const barRight = innerR - 70;
+    const n = 5,
+      gap = 4;
+    const segW = Math.max(4, Math.floor((barRight - barX - gap * (n - 1)) / n));
+    for (let i = 0; i < n; i++) {
+      const sx = barX + i * (segW + gap);
+      if (sx + segW > barRight + 0.5) break; // guarantee containment
+      if (i < tl) {
+        // filled segments ramp warning → danger toward 5; top one pulses gently
+        ctx.fillStyle = i >= 3 ? '#ff4f5e' : '#ffb02e';
+        ctx.globalAlpha =
+          i === tl - 1 ? 0.7 + 0.3 * (0.5 + 0.5 * Math.sin(performance.now() / 350)) : 1;
+        ctx.fillRect(sx, 53, segW, 10);
+        ctx.globalAlpha = 1;
+      } else {
+        ctx.strokeStyle = 'rgba(125,164,179,0.5)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(sx + 0.5, 53.5, segW - 1, 9);
+      }
+    }
     // boss healthbar (below the mission banner)
     if (this.boss && !this.boss.dead) {
       const bw2 = Math.min(520, W * 0.5);
@@ -1816,6 +1908,48 @@ class Game {
     ctx.textAlign = 'left';
     if (hover && en && Input.mouseClicked) cb();
   }
+  // Short stat line for a weapon card (English; glanceable).
+  weaponStat(def) {
+    const tag = def.pierce
+      ? 'PIERCE'
+      : def.aoe
+        ? 'AOE'
+        : def.status === 'freeze'
+          ? 'FREEZE'
+          : def.bounce
+            ? 'BOUNCE'
+            : def.homing
+              ? 'HOMING'
+              : def.useHeat
+                ? 'HEAT'
+                : '';
+    const rof = def.useHeat ? def.tickRate || 8 : def.fireRate;
+    return 'DMG ' + def.damage + ' · ROF ' + rof + (tag ? ' · ' + tag : '');
+  }
+  deviceStat(def) {
+    const fx = {
+      turret: 'Auto-gun',
+      shield: 'Barrier',
+      scanner: 'Reveal',
+      mine: 'Proximity',
+      drone: 'Companion',
+      decoy: 'Bait',
+      emp: 'Stun AoE',
+    };
+    return 'CD ' + def.cd + 's · ' + (fx[def.key] || 'Device');
+  }
+  // Icon + name + stat-line card used by the loadout rows (button drawn under it).
+  drawLoadoutCard(x, y, w, h, slot, def, stat, color) {
+    const ctx = this.ctx;
+    drawIcon(ctx, def.key, x + 22, y + h / 2, 28, color);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#dff6ff';
+    ctx.font = 'bold 12px monospace';
+    ctx.fillText('[' + slot + '] ' + def.name, x + 44, y + 20);
+    ctx.fillStyle = '#7da4b3';
+    ctx.font = '10px monospace';
+    ctx.fillText(stat, x + 44, y + 38);
+  }
   /* ------------------------------ STATION -------------------------------- */
   drawStation() {
     const ctx = this.ctx,
@@ -1836,22 +1970,11 @@ class Game {
       ctx.fillStyle = 'rgba(200,230,255,' + (0.15 + tw * 0.3) + ')';
       ctx.fillRect(sx, sy, 1.5, 1.5);
     }
-    // planet
-    const px = W * 0.85,
-      py = H * 0.8;
-    const pg = ctx.createRadialGradient(px - 30, py - 30, 20, px, py, 160);
-    pg.addColorStop(0, '#1f5a48');
-    pg.addColorStop(1, '#0a2018');
-    ctx.fillStyle = pg;
-    ctx.beginPath();
-    ctx.arc(px, py, 160, 0, TAU);
-    ctx.fill();
-    ctx.fillStyle = 'rgba(93,255,160,0.12)';
-    for (let i = 0; i < 6; i++) {
-      ctx.beginPath();
-      ctx.ellipse(px + Math.sin(i * 2.3) * 80, py + Math.cos(i * 1.7) * 80, 38, 14, i, 0, TAU);
-      ctx.fill();
-    }
+    // living planet (procedural, layered; surface baked once then animated)
+    if (!this.planet) this.planet = new Planet(170);
+    const reducedMotion = false; // no reduced-motion setting in this build
+    this.planet.update(1 / 60, reducedMotion);
+    this.planet.draw(ctx, W * 0.82, H * 0.78, reducedMotion);
 
     // header
     ctx.fillStyle = '#7af5ff';
@@ -1927,46 +2050,58 @@ class Game {
     ctx.font = '11px monospace';
     ctx.fillText('click to cycle', 130, loy);
     const lo = m.loadout;
+    const cw = 178,
+      ch = 50,
+      cstep = 188;
     for (let i = 0; i < 3; i++) {
-      const wi = i; // capture
-      this.button(
-        40 + i * 152,
-        loy + 10,
-        142,
-        26,
-        '[' + (i + 1) + '] ' + WEAPONS[lo.weapons[i]].name,
-        () => {
-          lo.weapons[wi] = cycleChoice(
-            WEAPON_CHOICES,
-            lo.weapons[wi],
-            1,
-            lo.weapons.filter((_, j) => j !== wi)
-          );
-          this.save();
-        },
-        true,
-        WEAPONS[lo.weapons[i]].color
+      const wi = i;
+      const def = WEAPONS[lo.weapons[i]];
+      const cx2 = 40 + i * cstep,
+        cy2 = loy + 10;
+      this.button(cx2, cy2, cw, ch, '', () => {
+        lo.weapons[wi] = cycleChoice(
+          WEAPON_CHOICES,
+          lo.weapons[wi],
+          1,
+          lo.weapons.filter((_, j) => j !== wi)
+        );
+        this.save();
+      });
+      this.drawLoadoutCard(
+        cx2,
+        cy2,
+        cw,
+        ch,
+        '' + (i + 1),
+        def,
+        this.weaponStat(def),
+        iconColor(def)
       );
     }
     const devLabels = ['Q', 'F', 'C', 'X'];
     for (let i = 0; i < 4; i++) {
-      const di = i; // capture
-      this.button(
-        40 + i * 152,
-        loy + 42,
-        142,
-        26,
-        devLabels[i] + ': ' + DEVICES[lo.devices[i]].name,
-        () => {
-          lo.devices[di] = cycleChoice(
-            DEVICE_CHOICES,
-            lo.devices[di],
-            1,
-            lo.devices.filter((_, j) => j !== di)
-          );
-          this.save();
-        },
-        true
+      const di = i;
+      const def = DEVICES[lo.devices[i]];
+      const cx2 = 40 + i * cstep,
+        cy2 = loy + 10 + ch + 8;
+      this.button(cx2, cy2, cw, ch, '', () => {
+        lo.devices[di] = cycleChoice(
+          DEVICE_CHOICES,
+          lo.devices[di],
+          1,
+          lo.devices.filter((_, j) => j !== di)
+        );
+        this.save();
+      });
+      this.drawLoadoutCard(
+        cx2,
+        cy2,
+        cw,
+        ch,
+        devLabels[i],
+        def,
+        this.deviceStat(def),
+        iconColor(def)
       );
     }
 
@@ -2025,18 +2160,34 @@ class Game {
     const ctx = this.ctx,
       W = this.canvas.width,
       H = this.canvas.height;
-    ctx.fillStyle = 'rgba(4,8,10,0.75)';
+    ctx.fillStyle = 'rgba(4,8,10,0.78)';
     ctx.fillRect(0, 0, W, H);
+    // settings sub-view (reuses the shared settings body; BACK → pause menu)
+    if (this.pauseView === 'settings') {
+      this.drawSettingsBody();
+      this.button(60, H - 70, 180, 44, '◀ BACK', () => (this.pauseView = 'menu'), true, '#7af5ff');
+      return;
+    }
     ctx.fillStyle = '#7af5ff';
     ctx.font = 'bold 28px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText('PAUSED', W / 2, H / 2 - 90);
+    ctx.fillText('PAUSED', W / 2, H / 2 - 110);
     ctx.textAlign = 'left';
-    this.button(W / 2 - 130, H / 2 - 50, 260, 40, 'RESUME [Esc]', () => (this.state = 'playing'));
-    this.button(W / 2 - 130, H / 2 + 2, 260, 40, 'RESTART EXPEDITION', () => this.startRun());
+    this.button(W / 2 - 130, H / 2 - 70, 260, 40, 'RESUME [Esc]', () => (this.state = 'playing'));
     this.button(
       W / 2 - 130,
-      H / 2 + 54,
+      H / 2 - 22,
+      260,
+      40,
+      'SETTINGS',
+      () => (this.pauseView = 'settings'),
+      true,
+      '#ffd35d'
+    );
+    this.button(W / 2 - 130, H / 2 + 26, 260, 40, 'RESTART EXPEDITION', () => this.startRun());
+    this.button(
+      W / 2 - 130,
+      H / 2 + 74,
       260,
       40,
       'RETURN TO STATION',
