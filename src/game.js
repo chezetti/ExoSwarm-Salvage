@@ -41,6 +41,7 @@ import { tickCombo } from './systems/combo.js';
 import * as Overdrive from './systems/overdrive.js';
 import { makeRng, randIn, randIntIn, pickIn } from './systems/rng.js';
 import { CLASSES, CLASS_KEYS } from './config/classes.js';
+import { drawIcon, iconColor } from './ui/icons.js';
 import { MODIFIERS, MODIFIER_KEYS, aggregate } from './config/modifiers.js';
 
 /* ================================ GAME ================================== */
@@ -1524,6 +1525,7 @@ class Game {
     ctx.fillRect(14, y, bw, 40);
     ctx.strokeStyle = 'rgba(180,220,230,0.35)';
     ctx.strokeRect(14, y, bw, 40);
+    drawIcon(ctx, def.key, 14 + bw - 20, y + 20, 26, iconColor(def));
     ctx.fillStyle = def.color;
     ctx.font = 'bold 12px monospace';
     ctx.fillText('[' + (p.slots.indexOf(p.weaponKey) + 1) + '] ' + def.name, 20, y + 16);
@@ -1543,19 +1545,24 @@ class Game {
 
     // devices (from the equipped loadout)
     const devKeyLabels = ['Q', 'F', 'C', 'X'];
-    const devs = p.deviceSlots.map((k, i) => [devKeyLabels[i], DEVICES[k].name, p.dev[k]]);
+    const devs = p.deviceSlots.map((k, i) => [devKeyLabels[i], k, p.dev[k]]);
     let dx = 14;
-    for (const [key, name, cd] of devs) {
+    for (const [key, dkey, cd] of devs) {
       const ready = cd <= 0;
       ctx.fillStyle = ready ? 'rgba(20,46,40,0.85)' : 'rgba(8,16,20,0.75)';
       ctx.fillRect(dx, y, 44, 34);
+      // device icon (dim while on cooldown)
+      drawIcon(ctx, dkey, dx + 30, y + 12, 18, ready ? iconColor(DEVICES[dkey]) : '#6f8693');
       ctx.strokeStyle = ready ? '#2ee6a8' : 'rgba(120,140,150,0.4)';
       ctx.strokeRect(dx, y, 44, 34);
       ctx.fillStyle = ready ? '#aef5dc' : '#7a8b99';
       ctx.font = 'bold 11px monospace';
       ctx.fillText(key, dx + 4, y + 13);
-      ctx.font = '9px monospace';
-      ctx.fillText(ready ? name : Math.ceil(cd) + 's', dx + 4, y + 27);
+      // cooldown seconds (bottom) when charging; icon conveys the device type
+      if (!ready) {
+        ctx.font = '9px monospace';
+        ctx.fillText(Math.ceil(cd) + 's', dx + 24, y + 31);
+      }
       dx += 48;
     }
     y += 42;
@@ -1858,6 +1865,48 @@ class Game {
     ctx.textAlign = 'left';
     if (hover && en && Input.mouseClicked) cb();
   }
+  // Short stat line for a weapon card (English; glanceable).
+  weaponStat(def) {
+    const tag = def.pierce
+      ? 'PIERCE'
+      : def.aoe
+        ? 'AOE'
+        : def.status === 'freeze'
+          ? 'FREEZE'
+          : def.bounce
+            ? 'BOUNCE'
+            : def.homing
+              ? 'HOMING'
+              : def.useHeat
+                ? 'HEAT'
+                : '';
+    const rof = def.useHeat ? (def.tickRate || 8) : def.fireRate;
+    return 'DMG ' + def.damage + ' · ROF ' + rof + (tag ? ' · ' + tag : '');
+  }
+  deviceStat(def) {
+    const fx = {
+      turret: 'Auto-gun',
+      shield: 'Barrier',
+      scanner: 'Reveal',
+      mine: 'Proximity',
+      drone: 'Companion',
+      decoy: 'Bait',
+      emp: 'Stun AoE',
+    };
+    return 'CD ' + def.cd + 's · ' + (fx[def.key] || 'Device');
+  }
+  // Icon + name + stat-line card used by the loadout rows (button drawn under it).
+  drawLoadoutCard(x, y, w, h, slot, def, stat, color) {
+    const ctx = this.ctx;
+    drawIcon(ctx, def.key, x + 22, y + h / 2, 28, color);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#dff6ff';
+    ctx.font = 'bold 12px monospace';
+    ctx.fillText('[' + slot + '] ' + def.name, x + 44, y + 20);
+    ctx.fillStyle = '#7da4b3';
+    ctx.font = '10px monospace';
+    ctx.fillText(stat, x + 44, y + 38);
+  }
   /* ------------------------------ STATION -------------------------------- */
   drawStation() {
     const ctx = this.ctx,
@@ -1969,47 +2018,31 @@ class Game {
     ctx.font = '11px monospace';
     ctx.fillText('click to cycle', 130, loy);
     const lo = m.loadout;
+    const cw = 178,
+      ch = 50,
+      cstep = 188;
     for (let i = 0; i < 3; i++) {
-      const wi = i; // capture
-      this.button(
-        40 + i * 152,
-        loy + 10,
-        142,
-        26,
-        '[' + (i + 1) + '] ' + WEAPONS[lo.weapons[i]].name,
-        () => {
-          lo.weapons[wi] = cycleChoice(
-            WEAPON_CHOICES,
-            lo.weapons[wi],
-            1,
-            lo.weapons.filter((_, j) => j !== wi)
-          );
-          this.save();
-        },
-        true,
-        WEAPONS[lo.weapons[i]].color
-      );
+      const wi = i;
+      const def = WEAPONS[lo.weapons[i]];
+      const cx2 = 40 + i * cstep,
+        cy2 = loy + 10;
+      this.button(cx2, cy2, cw, ch, '', () => {
+        lo.weapons[wi] = cycleChoice(WEAPON_CHOICES, lo.weapons[wi], 1, lo.weapons.filter((_, j) => j !== wi));
+        this.save();
+      });
+      this.drawLoadoutCard(cx2, cy2, cw, ch, '' + (i + 1), def, this.weaponStat(def), iconColor(def));
     }
     const devLabels = ['Q', 'F', 'C', 'X'];
     for (let i = 0; i < 4; i++) {
-      const di = i; // capture
-      this.button(
-        40 + i * 152,
-        loy + 42,
-        142,
-        26,
-        devLabels[i] + ': ' + DEVICES[lo.devices[i]].name,
-        () => {
-          lo.devices[di] = cycleChoice(
-            DEVICE_CHOICES,
-            lo.devices[di],
-            1,
-            lo.devices.filter((_, j) => j !== di)
-          );
-          this.save();
-        },
-        true
-      );
+      const di = i;
+      const def = DEVICES[lo.devices[i]];
+      const cx2 = 40 + i * cstep,
+        cy2 = loy + 10 + ch + 8;
+      this.button(cx2, cy2, cw, ch, '', () => {
+        lo.devices[di] = cycleChoice(DEVICE_CHOICES, lo.devices[di], 1, lo.devices.filter((_, j) => j !== di));
+        this.save();
+      });
+      this.drawLoadoutCard(cx2, cy2, cw, ch, devLabels[i], def, this.deviceStat(def), iconColor(def));
     }
 
     // top-right: profile actions
