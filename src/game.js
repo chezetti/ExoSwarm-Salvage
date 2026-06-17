@@ -455,7 +455,11 @@ class Game {
         this.updatePlaying(dt);
         break;
       case 'paused':
-        if (Input.wasPressed('Escape')) this.state = 'playing';
+        if (Input.wasPressed('Escape')) {
+          // Esc backs out of the settings sub-view first, then resumes
+          if (this.pauseView === 'settings') this.pauseView = 'menu';
+          else this.state = 'playing';
+        }
         break;
       case 'station':
       case 'death':
@@ -506,6 +510,7 @@ class Game {
     r.time += dt;
 
     if (Input.wasPressed('Escape')) {
+      this.pauseView = 'menu';
       this.state = 'paused';
       return;
     }
@@ -1103,14 +1108,13 @@ class Game {
       this.applySettings();
     });
   }
-  drawSettings() {
-    const ctx = this.ctx,
-      W = this.canvas.width,
-      H = this.canvas.height;
-    ctx.fillStyle = '#070d10';
-    ctx.fillRect(0, 0, W, H);
+  // Shared settings body (title + steppers + hint). Reused by the station
+  // SETTINGS screen and the in-game pause menu so the code lives in one place.
+  drawSettingsBody() {
+    const ctx = this.ctx;
     ctx.fillStyle = '#7af5ff';
     ctx.font = 'bold 24px monospace';
+    ctx.textAlign = 'left';
     ctx.fillText('SETTINGS', 60, 56);
     const s =
       this.meta.settings ||
@@ -1121,6 +1125,14 @@ class Game {
     ctx.fillStyle = '#9fb6c4';
     ctx.font = '11px monospace';
     ctx.fillText('Lower FX quality if you see slowdowns in heavy fights.', 60, 320);
+  }
+  drawSettings() {
+    const ctx = this.ctx,
+      W = this.canvas.width,
+      H = this.canvas.height;
+    ctx.fillStyle = '#070d10';
+    ctx.fillRect(0, 0, W, H);
+    this.drawSettingsBody();
     this.button(60, H - 70, 180, 44, '◀ BACK', () => (this.state = 'station'), true, '#7af5ff');
   }
   /* ---------------------------- CLASS SELECT ----------------------------- */
@@ -1610,13 +1622,43 @@ class Game {
     ctx.fillStyle = '#dff6ff';
     ctx.font = '12px monospace';
     ctx.fillText(this.mission.objectiveText(), W / 2, 45);
+    // threat: a drawn segmented bar clamped to the panel's inner width (never
+    // overflows). Label on the left, timer on the right, segments between.
     const tl = this.threatLevel();
-    ctx.fillStyle = tl >= 4 ? '#ff5d4d' : tl >= 2 ? '#ffd35d' : '#7af5ff';
-    ctx.fillText(
-      'THREAT ' + tl + '/5  ' + '█'.repeat(tl) + '░'.repeat(5 - tl) + '   ⏱ ' + fmtTime(r.time),
-      W / 2,
-      61
-    );
+    const pad = 14;
+    const innerL = W / 2 - mw / 2 + pad;
+    const innerR = W / 2 + mw / 2 - pad;
+    const threatColor = tl >= 4 ? '#ff4f5e' : tl >= 2 ? '#ffb02e' : '#7af5ff';
+    ctx.font = 'bold 12px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = threatColor;
+    ctx.fillText('THREAT ' + tl + '/5', innerL, 61);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#dff6ff';
+    ctx.fillText('⏱ ' + fmtTime(r.time), innerR, 61);
+    ctx.textAlign = 'left';
+    // segmented bar in the space between the two labels
+    const barX = innerL + 96;
+    const barRight = innerR - 70;
+    const n = 5,
+      gap = 4;
+    const segW = Math.max(4, Math.floor((barRight - barX - gap * (n - 1)) / n));
+    for (let i = 0; i < n; i++) {
+      const sx = barX + i * (segW + gap);
+      if (sx + segW > barRight + 0.5) break; // guarantee containment
+      if (i < tl) {
+        // filled segments ramp warning → danger toward 5; top one pulses gently
+        ctx.fillStyle = i >= 3 ? '#ff4f5e' : '#ffb02e';
+        ctx.globalAlpha =
+          i === tl - 1 ? 0.7 + 0.3 * (0.5 + 0.5 * Math.sin(performance.now() / 350)) : 1;
+        ctx.fillRect(sx, 53, segW, 10);
+        ctx.globalAlpha = 1;
+      } else {
+        ctx.strokeStyle = 'rgba(125,164,179,0.5)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(sx + 0.5, 53.5, segW - 1, 9);
+      }
+    }
     // boss healthbar (below the mission banner)
     if (this.boss && !this.boss.dead) {
       const bw2 = Math.min(520, W * 0.5);
@@ -2025,18 +2067,34 @@ class Game {
     const ctx = this.ctx,
       W = this.canvas.width,
       H = this.canvas.height;
-    ctx.fillStyle = 'rgba(4,8,10,0.75)';
+    ctx.fillStyle = 'rgba(4,8,10,0.78)';
     ctx.fillRect(0, 0, W, H);
+    // settings sub-view (reuses the shared settings body; BACK → pause menu)
+    if (this.pauseView === 'settings') {
+      this.drawSettingsBody();
+      this.button(60, H - 70, 180, 44, '◀ BACK', () => (this.pauseView = 'menu'), true, '#7af5ff');
+      return;
+    }
     ctx.fillStyle = '#7af5ff';
     ctx.font = 'bold 28px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText('PAUSED', W / 2, H / 2 - 90);
+    ctx.fillText('PAUSED', W / 2, H / 2 - 110);
     ctx.textAlign = 'left';
-    this.button(W / 2 - 130, H / 2 - 50, 260, 40, 'RESUME [Esc]', () => (this.state = 'playing'));
-    this.button(W / 2 - 130, H / 2 + 2, 260, 40, 'RESTART EXPEDITION', () => this.startRun());
+    this.button(W / 2 - 130, H / 2 - 70, 260, 40, 'RESUME [Esc]', () => (this.state = 'playing'));
     this.button(
       W / 2 - 130,
-      H / 2 + 54,
+      H / 2 - 22,
+      260,
+      40,
+      'SETTINGS',
+      () => (this.pauseView = 'settings'),
+      true,
+      '#ffd35d'
+    );
+    this.button(W / 2 - 130, H / 2 + 26, 260, 40, 'RESTART EXPEDITION', () => this.startRun());
+    this.button(
+      W / 2 - 130,
+      H / 2 + 74,
       260,
       40,
       'RETURN TO STATION',
