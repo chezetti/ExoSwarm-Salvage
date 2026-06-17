@@ -12,6 +12,7 @@ import { Decoy } from '../world/decoy.js';
 import { drawClone } from './clone.js';
 import { defaultAppearance } from '../config/appearance.js';
 import { OD_FIRE_MULT, OD_DAMAGE_MULT } from '../systems/overdrive.js';
+import { CLASSES } from '../config/classes.js';
 
 /* =============================== PLAYER ================================= */
 class Player {
@@ -68,6 +69,27 @@ class Player {
     this.speedMult = 1;
     this.armorShred = 0;
     this.appearance = game.meta.appearance || defaultAppearance();
+    // clone class: apply stat multipliers + grant the class ability (G)
+    this.classDef = CLASSES[m.class] || CLASSES.vanguard;
+    const c = this.classDef;
+    this.maxHealth = Math.round(this.maxHealth * (c.hpMult || 1));
+    this.health = this.maxHealth;
+    this.speed *= c.speedMult || 1;
+    this.dashCooldownMax *= c.dashCdMult || 1;
+    this.armor += c.armorAdd || 0;
+    this.devCdMult *= c.deviceCdMult || 1;
+    this.scanRangeMult = c.scanRangeMult || 1;
+    this.ability = c.ability;
+    this.abilityT = 0; // cooldown remaining
+    this.buffT = 0; // active class buff timer
+    this.buffKind = null; // 'fireRate' | 'armor'
+    // expedition modifiers (Glass Protocol) tune the clone
+    const rmods = (game.run && game.run.mods) || null;
+    this.modDmgMult = rmods ? rmods.playerDmgMult : 1;
+    if (rmods && rmods.playerHpMult !== 1) {
+      this.maxHealth = Math.round(this.maxHealth * rmods.playerHpMult);
+      this.health = this.maxHealth;
+    }
   }
   carryWeight() {
     let w = 0;
@@ -95,6 +117,10 @@ class Player {
     }
     tickStatuses(this, dt, g);
     if (this.dead) return; // burn tick can kill
+    // class ability (G) + buff timers (real dt — unaffected by hitstop is fine here)
+    this.abilityT = Math.max(0, this.abilityT - dt);
+    this.buffT = Math.max(0, this.buffT - dt);
+    if (inp.wasPressed('g') && this.ability && this.abilityT <= 0) this.useAbility(mx, my);
     let spd =
       this.speed * (1 - ((0.04 * this.carryWeight()) / Math.max(1, this.carryCapacity)) * 4);
     spd = Math.max(this.speed * 0.7, spd);
@@ -223,8 +249,8 @@ class Player {
         Sound.device();
         break;
       case 'scanner':
-        g.scanPulse = { x: this.x, y: this.y, r: 0, max: 620 };
-        g.scanRevealT = 5;
+        g.scanPulse = { x: this.x, y: this.y, r: 0, max: 620 * (this.scanRangeMult || 1) };
+        g.scanRevealT = 5 * (this.scanRangeMult || 1);
         Sound.device();
         break;
       case 'mine':
@@ -252,6 +278,42 @@ class Player {
           }
           return false;
         });
+        break;
+      }
+    }
+  }
+  // Class ability on G. One contained behavioral switch; tuning lives in config.
+  useAbility(mx, my) {
+    const g = this.game,
+      ab = this.ability;
+    this.abilityT = ab.cd;
+    Sound.device();
+    switch (ab.id) {
+      case 'overclock': // fire-rate surge
+        this.buffKind = 'fireRate';
+        this.buffT = ab.dur;
+        burst(g, this.x, this.y, '#ffd35d', 14, 140, 3, 0.5);
+        break;
+      case 'bulwark': // damage reduction
+        this.buffKind = 'armor';
+        this.buffT = ab.dur;
+        burst(g, this.x, this.y, '#8ab4ff', 14, 120, 3, 0.5);
+        break;
+      case 'blink': {
+        // teleport ~190px along movement (or aim if standing still) + brief i-frames
+        const a = mx || my ? Math.atan2(my, mx) : this.aim;
+        this.x = clamp(this.x + Math.cos(a) * 190, this.radius, WORLD_W - this.radius);
+        this.y = clamp(this.y + Math.sin(a) * 190, this.radius, WORLD_H - this.radius);
+        this.invuln = Math.max(this.invuln, ab.dur);
+        burst(g, this.x, this.y, '#7af5ff', 18, 160, 3, 0.5);
+        break;
+      }
+      case 'repairPulse': {
+        // heal the Mule + nearby turrets and a little self
+        this.health = Math.min(this.maxHealth, this.health + 40);
+        if (g.mule && !g.mule.dead) g.mule.hp = Math.min(g.mule.maxHp, g.mule.hp + 120);
+        for (const t of g.turrets) if (!t.dead && t.life !== Infinity) t.life += 8;
+        burst(g, this.x, this.y, '#2ee6a8', 18, 130, 3, 0.6);
         break;
       }
     }
@@ -293,10 +355,14 @@ class Player {
       return;
     }
     const od = this.game.run && this.game.run.odActive > 0;
-    ws.cooldownT = 1 / (def.fireRate * (od ? OD_FIRE_MULT : 1));
+    const fireBuff = this.buffKind === 'fireRate' && this.buffT > 0 ? 1.6 : 1;
+    ws.cooldownT = 1 / (def.fireRate * (od ? OD_FIRE_MULT : 1) * fireBuff);
     ws.ammo--;
     this.muzzle = 1;
-    this.spawnShot(def, def.damage * this.damageMult(def.key) * (od ? OD_DAMAGE_MULT : 1));
+    this.spawnShot(
+      def,
+      def.damage * this.damageMult(def.key) * (od ? OD_DAMAGE_MULT : 1) * (this.modDmgMult || 1)
+    );
   }
   // Build and launch a weapon's projectiles. chargeMul scales a charged shot.
   spawnShot(def, dmg, chargeMul = 1) {
@@ -501,6 +567,7 @@ class Player {
       }
     }
     dmg *= 1 - this.armor / (this.armor + 100);
+    if (this.buffKind === 'armor' && this.buffT > 0) dmg *= 0.45; // Heavy bulwark
     this.health -= dmg;
     this.hitFlash = 1;
     this.invuln = 0.15;

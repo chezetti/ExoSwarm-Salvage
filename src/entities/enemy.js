@@ -17,10 +17,13 @@ class Enemy {
     const t = ENEMY_TYPES[type];
     this.def = t;
     const lvlMult = 1 + 0.18 * ((level || 1) - 1);
-    this.maxHp = t.hp * lvlMult;
+    // expedition modifiers (Iron Swarm / Brood Vigor) toughen the swarm
+    const mods = (game.run && game.run.mods) || null;
+    this.maxHp = t.hp * lvlMult * (mods ? mods.enemyHpMult : 1);
     this.hp = this.maxHp;
     this.speed = t.speed * (1 + 0.06 * ((level || 1) - 1));
     this.damage = t.damage * lvlMult;
+    this.modArmorAdd = mods ? mods.enemyArmorAdd : 0;
     // elite variants: tougher + a twist (splitter/armored/frenzied)
     this.elite = elite || null;
     if (this.elite) {
@@ -264,9 +267,10 @@ class Enemy {
     if (this.dead) return;
     if (this.shielded) dmg *= 0.7;
     if (this.eliteArmor) dmg *= 1 - this.eliteArmor * (1 - (this.armorShred || 0));
-    if (this.def.armor) {
+    const baseArmor = (this.def.armor || 0) + (this.modArmorAdd || 0);
+    if (baseArmor > 0) {
       // frontal armor: shots arriving against facing reduced; corrode shreds it
-      const armor = this.def.armor * (1 - (this.armorShred || 0));
+      const armor = Math.min(0.9, baseArmor) * (1 - (this.armorShred || 0));
       if (fromX !== undefined) {
         const hitA = angleTo(this.x, this.y, fromX, fromY);
         const ad = Math.abs(angleDiff(this.facing, hitA));
