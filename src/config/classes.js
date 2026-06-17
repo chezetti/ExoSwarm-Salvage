@@ -8,7 +8,8 @@ const CLASSES = {
   vanguard: {
     name: 'Vanguard',
     desc: 'Balanced all-rounder.',
-    ability: { id: 'overclock', name: 'Overclock', cd: 18, dur: 4 },
+    stats: { health: 0.6, speed: 0.6, armor: 0.6, device: 0.5 },
+    ability: { id: 'overclock', name: 'Overclock', cd: 18, dur: 4, blurb: 'Burst of fire rate.' },
   },
   scout: {
     name: 'Scout',
@@ -17,13 +18,21 @@ const CLASSES = {
     speedMult: 1.25,
     dashCdMult: 0.7,
     scanRangeMult: 1.4,
-    ability: { id: 'blink', name: 'Blink Dash', cd: 8, dur: 0.4 },
+    stats: { health: 0.35, speed: 0.95, armor: 0.4, device: 0.6 },
+    ability: { id: 'blink', name: 'Blink Dash', cd: 8, dur: 0.4, blurb: 'Teleport toward aim.' },
   },
   engineer: {
     name: 'Engineer',
     desc: 'Devices recharge faster; repair pulse.',
     deviceCdMult: 0.7,
-    ability: { id: 'repairPulse', name: 'Repair Pulse', cd: 20, dur: 0 },
+    stats: { health: 0.55, speed: 0.55, armor: 0.5, device: 1.0 },
+    ability: {
+      id: 'repairPulse',
+      name: 'Repair Pulse',
+      cd: 20,
+      dur: 0,
+      blurb: 'Heal Mule & turrets.',
+    },
   },
   heavy: {
     name: 'Heavy',
@@ -31,7 +40,8 @@ const CLASSES = {
     hpMult: 1.4,
     speedMult: 0.85,
     armorAdd: 20,
-    ability: { id: 'bulwark', name: 'Bulwark', cd: 16, dur: 3 },
+    stats: { health: 1.0, speed: 0.35, armor: 1.0, device: 0.5 },
+    ability: { id: 'bulwark', name: 'Bulwark', cd: 16, dur: 3, blurb: 'Heavy damage reduction.' },
   },
 };
 

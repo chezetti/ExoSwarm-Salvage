@@ -42,6 +42,7 @@ import * as Overdrive from './systems/overdrive.js';
 import { makeRng, randIn, randIntIn, pickIn } from './systems/rng.js';
 import { CLASSES, CLASS_KEYS } from './config/classes.js';
 import { drawIcon, iconColor } from './ui/icons.js';
+import { drawAbilityPreview } from './ui/abilityPreview.js';
 import { MODIFIERS, MODIFIER_KEYS, aggregate } from './config/modifiers.js';
 
 /* ================================ GAME ================================== */
@@ -1146,44 +1147,76 @@ class Game {
     ctx.fillStyle = '#7af5ff';
     ctx.font = 'bold 24px monospace';
     ctx.fillText('SELECT CLONE CLASS', 60, 56);
+    ctx.fillStyle = '#9fb6c4';
+    ctx.font = '11px monospace';
+    ctx.fillText('Pick a class — keys 1–4 also select. Live ability preview on each card.', 60, 80);
     const cur = this.meta.class || 'vanguard';
-    const cardW = Math.min(260, (W - 200) / 4),
-      gap = 20,
+    const cardW = Math.min(268, (W - 120) / 4),
+      gap = 16,
+      cardH = 300,
       total = CLASS_KEYS.length * cardW + (CLASS_KEYS.length - 1) * gap;
     let x = (W - total) / 2;
-    const y = 120;
-    for (const key of CLASS_KEYS) {
+    const y = 104;
+    const tNow = performance.now() / 1000;
+    const hot = ['1', '2', '3', '4'];
+    CLASS_KEYS.forEach((key, idx) => {
       const def = CLASSES[key];
       const sel = key === cur;
-      this.button(
-        x,
-        y,
-        cardW,
-        180,
-        '',
-        () => {
-          this.meta.class = key;
-          this.save();
-          Sound.device();
-        },
-        true,
-        sel ? '#2ee6a8' : undefined
-      );
-      // avatar + name + 2-line tradeoff + ability
-      drawClone(ctx, x + cardW / 2, y + 54, this.meta.appearance || defaultAppearance(), 1.8, 0, 0);
+      if (Input.wasPressed(hot[idx])) {
+        this.meta.class = key;
+        this.save();
+        Sound.device();
+      }
+      this.button(x, y, cardW, cardH, '', () => {
+        this.meta.class = key;
+        this.save();
+        Sound.device();
+      }, true, sel ? '#2ee6a8' : '#6e8bff');
+      const mid = x + cardW / 2;
+      drawClone(ctx, mid, y + 40, this.meta.appearance || defaultAppearance(), 1.6, 0, 0);
       ctx.fillStyle = sel ? '#2ee6a8' : '#dff6ff';
-      ctx.font = 'bold 15px monospace';
+      ctx.font = 'bold 16px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(def.name, x + cardW / 2, y + 104);
+      ctx.fillText(def.name + (sel ? '  ✓' : ''), mid, y + 86);
+      ctx.textAlign = 'left';
+      // live ability preview viewport
+      drawAbilityPreview(ctx, def.ability.id, x + 16, y + 98, cardW - 32, 58, tNow);
+      // stat bars
+      const st = def.stats || { health: 0.6, speed: 0.6, armor: 0.6, device: 0.5 };
+      const rows = [
+        ['HEALTH', st.health, '#5dffa8'],
+        ['SPEED', st.speed, '#4df0ff'],
+        ['ARMOR', st.armor, '#7d8cff'],
+        ['DEVICE CD', st.device, '#ffc857'],
+      ];
+      let by = y + 172;
+      for (const [lbl, frac, col] of rows) {
+        this.miniBar(x + 16, by, cardW - 32, lbl, frac, col);
+        by += 20;
+      }
+      // ability block
+      ctx.fillStyle = '#ffd35d';
+      ctx.font = 'bold 11px monospace';
+      ctx.fillText(def.ability.name + ' [G]', x + 16, y + cardH - 24);
       ctx.fillStyle = '#9fb6c4';
       ctx.font = '10px monospace';
-      this.wrapText(def.desc, x + cardW / 2, y + 126, cardW - 20, 13);
-      ctx.fillStyle = '#ffd35d';
-      ctx.fillText('Ability: ' + def.ability.name + ' [G]', x + cardW / 2, y + 166);
-      ctx.textAlign = 'left';
+      const dur = def.ability.dur ? ' · ' + def.ability.dur + 's' : '';
+      ctx.fillText(def.ability.blurb + '  CD ' + def.ability.cd + 's' + dur, x + 16, y + cardH - 9);
       x += cardW + gap;
-    }
-    this.button(60, H - 70, 180, 44, '◀ BACK', () => (this.state = 'station'), true, '#7af5ff');
+    });
+    this.button(60, H - 60, 180, 40, '◀ BACK', () => (this.state = 'station'), true, '#7af5ff');
+  }
+  // small labelled stat bar (0..1) for the class cards
+  miniBar(x, y, w, label, frac, color) {
+    const ctx = this.ctx;
+    ctx.fillStyle = '#7da4b3';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(label, x, y - 2);
+    ctx.fillStyle = 'rgba(8,16,20,0.8)';
+    ctx.fillRect(x, y, w, 6);
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, w * clamp(frac, 0, 1), 6);
   }
   // tiny word-wrap helper for centered card text
   wrapText(text, cx, y, maxW, lh) {
