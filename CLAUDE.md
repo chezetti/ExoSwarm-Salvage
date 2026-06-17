@@ -110,8 +110,20 @@ check that the import graph is intact** after edits.
 
 ## Gameplay model (for reasoning about code)
 
-- **States** (`Game.state`): `login` → `station` → `playing` → `paused` / `death` / `victory`,
-  plus `customize` and `settings` (both reached from the station). The game boots into `login`.
+- **States** (`Game.state`): `login` → `station` → `contract` (pre-run modifier draft) → `playing`
+  → `paused` / `death` / `victory`, plus `customize` / `settings` / `classsel` (from the station).
+  Boots into `login`.
+- **Seeded RNG** (`systems/rng.js`): `Game.startRun({seed, modifiers})` stores `run.seed` and builds
+  `worldRng = makeRng(seed)`; ALL world-gen (biome, outpost, deco, hives, resources, hazards,
+  starting enemies, mission) draws through it via `randIn/randIntIn/pickIn(this.worldRng, …)`. Same
+  seed → identical layout. Per-frame cosmetic randomness stays on `Math.random` — do NOT seed the
+  hot loop.
+- **Clone classes** (`config/classes.js`): `meta.class` (vanguard/scout/engineer/heavy) applies stat
+  mults in the Player ctor (after upgrades) + a `G` ability (timed buff/blink/repair). Picked on the
+  station CLASS screen.
+- **Expedition modifiers** (`config/modifiers.js`): pre-run draft (pick ≤2) → `run.modifiers` +
+  `run.mods = aggregate(...)`; systems read `run.mods.*` fields generically (enemy hp/armor, spawn
+  rate, signal drain, resource value, payout ×, player hp/dmg, start threat). Payout clamped ×3.
 - **Profiles / auth** (`systems/profiles.js`): named local profiles in `localStorage`
   (`exoswarm_profiles_v1`), each with its own save key (`exoswarm_salvage_save_v1::<id>`). Optional
   password is SHA-256-hashed via Web Crypto (never plaintext); password-less if Web Crypto is

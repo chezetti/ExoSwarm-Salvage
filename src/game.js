@@ -39,6 +39,9 @@ import { Music } from './systems/music.js';
 import { AudioEngine } from './systems/audioEngine.js';
 import { tickCombo } from './systems/combo.js';
 import * as Overdrive from './systems/overdrive.js';
+import { makeRng, randIn, randIntIn, pickIn } from './systems/rng.js';
+import { CLASSES, CLASS_KEYS } from './config/classes.js';
+import { MODIFIERS, MODIFIER_KEYS, aggregate } from './config/modifiers.js';
 
 /* ================================ GAME ================================== */
 const SAVE_KEY = 'exoswarm_salvage_save_v1';
@@ -69,6 +72,7 @@ function defaultMeta() {
     bestCombo: 0,
     bossKills: 0,
     appearance: defaultAppearance(),
+    class: 'vanguard',
     settings: { master: 0.8, music: 0.6, sfx: 0.9, fxScale: 1 },
     priceMods: { bioResin: 1, sporeFiber: 1, salvageChips: 1, softQuartz: 1, hiveEnzymes: 1 },
   };
@@ -142,7 +146,8 @@ class Game {
   /* ------------------------------ ECONOMY ------------------------------- */
   sellPrice(type) {
     const base = RESOURCE_TYPES[type].price * this.meta.priceMods[type];
-    const mult = 1 + 0.1 * this.meta.upgrades.marketContacts;
+    const valueMult = this.run && this.run.mods ? this.run.mods.valueMult : 1;
+    const mult = (1 + 0.1 * this.meta.upgrades.marketContacts) * valueMult;
     return Math.round(base * mult);
   }
   rerollPrices() {
@@ -180,7 +185,7 @@ class Game {
     Sound.deliver();
   }
   /* ------------------------------ RUN SETUP ----------------------------- */
-  startRun() {
+  startRun(opts = {}) {
     this.state = 'playing';
     this.particles = [];
     this.projectiles = [];
@@ -233,14 +238,24 @@ class Game {
       bossKillT: 0,
       odCharge: 0,
       odActive: 0,
+      seed: opts.seed != null ? opts.seed >>> 0 : (Math.random() * 0xffffffff) >>> 0,
+      modifiers: opts.modifiers || [],
+      mods: aggregate(opts.modifiers || []),
     };
+    this.run.threat = this.run.mods.startThreatAdd; // some modifiers start hotter
     this.fxScale = (this.meta.settings && this.meta.settings.fxScale) || 1;
-    this.biome = pick(BIOMES);
+    // Seeded world-gen: same seed → identical layout (daily / reproducible runs).
+    // Only gen/draws use worldRng; per-frame cosmetic randomness stays on Math.random.
+    this.worldRng = makeRng(this.run.seed);
+    const R = (a, b) => randIn(this.worldRng, a, b);
+    const RI = (a, b) => randIntIn(this.worldRng, a, b);
+    const P = (arr) => pickIn(this.worldRng, arr);
+    this.biome = P(BIOMES);
     this.boss = null;
 
     // outpost near center, offset
-    const ox = WORLD_W / 2 + rand(-250, 250);
-    const oy = WORLD_H / 2 + rand(-250, 250);
+    const ox = WORLD_W / 2 + R(-250, 250);
+    const oy = WORLD_H / 2 + R(-250, 250);
     this.outpost = new Outpost(this, ox, oy);
     this.player = new Player(this, ox + 140, oy + 140);
     this.mule = new Mule(this, ox + 200, oy + 200);
@@ -251,23 +266,23 @@ class Game {
     this.deco = [];
     for (let i = 0; i < 90; i++) {
       this.deco.push({
-        x: rand(0, WORLD_W),
-        y: rand(0, WORLD_H),
-        r: rand(8, 45),
-        t: randInt(0, 2),
-        ph: rand(0, TAU),
+        x: R(0, WORLD_W),
+        y: R(0, WORLD_H),
+        r: R(8, 45),
+        t: RI(0, 2),
+        ph: R(0, TAU),
       });
     }
     // hives
-    const nHives = randInt(3, 5);
+    const nHives = RI(3, 5);
     for (let i = 0; i < nHives; i++) {
       let hx,
         hy,
         ok = false,
         tries = 0;
       while (!ok && tries++ < 80) {
-        hx = rand(250, WORLD_W - 250);
-        hy = rand(250, WORLD_H - 250);
+        hx = R(250, WORLD_W - 250);
+        hy = R(250, WORLD_H - 250);
         ok = dist(hx, hy, ox, oy) > 650;
         for (const h of this.hives) if (dist(hx, hy, h.x, h.y) < 550) ok = false;
       }
@@ -284,18 +299,18 @@ class Game {
       'sporeFiber',
       'softQuartz',
     ];
-    const nRes = randInt(35, 50);
+    const nRes = RI(35, 50);
     for (let i = 0; i < nRes; i++) {
       let rx,
         ry,
         ok = false,
         tries = 0;
       while (!ok && tries++ < 60) {
-        rx = rand(120, WORLD_W - 120);
-        ry = rand(120, WORLD_H - 120);
+        rx = R(120, WORLD_W - 120);
+        ry = R(120, WORLD_H - 120);
         ok = dist(rx, ry, ox, oy) > 180;
       }
-      this.resources.push(new ResourceNode(this, rx, ry, pick(types)));
+      this.resources.push(new ResourceNode(this, rx, ry, P(types)));
     }
     // environmental hazards, weighted by the biome's bias
     this.hazards = [];
@@ -304,32 +319,32 @@ class Game {
       const n = Math.round(this.biome.hazardBias[hk] * 2);
       for (let i = 0; i < n; i++) hpool.push(hk);
     }
-    const nHaz = randInt(5, 8);
+    const nHaz = RI(5, 8);
     for (let i = 0; i < nHaz; i++) {
       let hx2,
         hy2,
         ok2 = false,
         tries2 = 0;
       while (!ok2 && tries2++ < 50) {
-        hx2 = rand(150, WORLD_W - 150);
-        hy2 = rand(150, WORLD_H - 150);
+        hx2 = R(150, WORLD_W - 150);
+        hy2 = R(150, WORLD_H - 150);
         ok2 = dist(hx2, hy2, ox, oy) > 350;
       }
-      this.hazards.push(new Hazard(this, pick(hpool), hx2, hy2));
+      this.hazards.push(new Hazard(this, P(hpool), hx2, hy2));
     }
     // starting enemies near hives
     for (const h of this.hives) {
-      const n = randInt(2, 4);
+      const n = RI(2, 4);
       for (let i = 0; i < n; i++) {
-        const a = rand(0, TAU),
-          d = rand(60, 160);
+        const a = R(0, TAU),
+          d = R(60, 160);
         this.enemies.push(
           new Enemy(this, 'skitterling', h.x + Math.cos(a) * d, h.y + Math.sin(a) * d, 1)
         );
       }
     }
     // mission
-    this.mission = new Mission(this, pick(Object.keys(MISSIONS)));
+    this.mission = new Mission(this, P(Object.keys(MISSIONS)));
     this.toast('Mission: ' + this.mission.def.name + ' — ' + this.mission.def.brief);
     Sound.evac();
   }
@@ -350,7 +365,7 @@ class Game {
   finishRun(died) {
     const r = this.run,
       m = this.meta;
-    const credits = r.deliveredValue;
+    const credits = Math.round(r.deliveredValue * (r.mods ? r.mods.payoutMult : 1));
     m.credits += credits;
     for (const k in r.delivered) m.resources[k] += r.delivered[k];
     // hydroponics
@@ -582,7 +597,7 @@ class Game {
     }
     if (this.threatLevel() >= 5) drop += 0.8;
     else if (this.threatLevel() >= 4) drop += 0.3;
-    p.signal = clamp(p.signal - drop * sigDrop * dt, 0, 100);
+    p.signal = clamp(p.signal - drop * sigDrop * r.mods.signalDrainMult * dt, 0, 100);
     if (this.outpost.active && nearOutpost) p.signal = clamp(p.signal + 6 * dt, 0, 100);
     else if (dist(p.x, p.y, this.outpost.x, this.outpost.y) < 350)
       p.signal = clamp(p.signal + 2 * dt, 0, 100);
@@ -590,7 +605,8 @@ class Game {
     // ambient spawn pressure
     r.spawnT -= dt;
     const minutes = r.time / 60;
-    const interval = Math.max(1.6, 9 - this.threatLevel() * 0.9 - minutes * 0.3);
+    const interval =
+      Math.max(1.6, 9 - this.threatLevel() * 0.9 - minutes * 0.3) / r.mods.spawnRateMult;
     if (r.spawnT <= 0 && r.time > 30 && this.enemies.length < 70) {
       r.spawnT = interval;
       const tl = this.threatLevel();
@@ -773,6 +789,14 @@ class Game {
     }
     if (this.state === 'settings') {
       this.drawSettings();
+      return;
+    }
+    if (this.state === 'classsel') {
+      this.drawClassSelect();
+      return;
+    }
+    if (this.state === 'contract') {
+      this.drawContract();
       return;
     }
     if (this.state === 'station') {
@@ -1098,6 +1122,164 @@ class Game {
     ctx.font = '11px monospace';
     ctx.fillText('Lower FX quality if you see slowdowns in heavy fights.', 60, 320);
     this.button(60, H - 70, 180, 44, '◀ BACK', () => (this.state = 'station'), true, '#7af5ff');
+  }
+  /* ---------------------------- CLASS SELECT ----------------------------- */
+  drawClassSelect() {
+    const ctx = this.ctx,
+      W = this.canvas.width,
+      H = this.canvas.height;
+    ctx.fillStyle = '#070d10';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#7af5ff';
+    ctx.font = 'bold 24px monospace';
+    ctx.fillText('SELECT CLONE CLASS', 60, 56);
+    const cur = this.meta.class || 'vanguard';
+    const cardW = Math.min(260, (W - 200) / 4),
+      gap = 20,
+      total = CLASS_KEYS.length * cardW + (CLASS_KEYS.length - 1) * gap;
+    let x = (W - total) / 2;
+    const y = 120;
+    for (const key of CLASS_KEYS) {
+      const def = CLASSES[key];
+      const sel = key === cur;
+      this.button(
+        x,
+        y,
+        cardW,
+        180,
+        '',
+        () => {
+          this.meta.class = key;
+          this.save();
+          Sound.device();
+        },
+        true,
+        sel ? '#2ee6a8' : undefined
+      );
+      // avatar + name + 2-line tradeoff + ability
+      drawClone(ctx, x + cardW / 2, y + 54, this.meta.appearance || defaultAppearance(), 1.8, 0, 0);
+      ctx.fillStyle = sel ? '#2ee6a8' : '#dff6ff';
+      ctx.font = 'bold 15px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(def.name, x + cardW / 2, y + 104);
+      ctx.fillStyle = '#9fb6c4';
+      ctx.font = '10px monospace';
+      this.wrapText(def.desc, x + cardW / 2, y + 126, cardW - 20, 13);
+      ctx.fillStyle = '#ffd35d';
+      ctx.fillText('Ability: ' + def.ability.name + ' [G]', x + cardW / 2, y + 166);
+      ctx.textAlign = 'left';
+      x += cardW + gap;
+    }
+    this.button(60, H - 70, 180, 44, '◀ BACK', () => (this.state = 'station'), true, '#7af5ff');
+  }
+  // tiny word-wrap helper for centered card text
+  wrapText(text, cx, y, maxW, lh) {
+    const ctx = this.ctx;
+    const words = text.split(' ');
+    let line = '',
+      yy = y;
+    for (const w of words) {
+      const test = line ? line + ' ' + w : w;
+      if (ctx.measureText(test).width > maxW && line) {
+        ctx.fillText(line, cx, yy);
+        line = w;
+        yy += lh;
+      } else line = test;
+    }
+    if (line) ctx.fillText(line, cx, yy);
+  }
+  /* ---------------------------- CONTRACT DRAFT --------------------------- */
+  beginContract(seed) {
+    const s = seed != null ? seed >>> 0 : (Math.random() * 0xffffffff) >>> 0;
+    // draw 3 distinct modifier choices, seeded so a daily run is reproducible
+    const rng = makeRng(s ^ 0x9e3779b9);
+    const pool = MODIFIER_KEYS.slice();
+    const choices = [];
+    while (choices.length < 3 && pool.length)
+      choices.push(pool.splice((rng() * pool.length) | 0, 1)[0]);
+    this.contract = { seed: s, choices, picked: [] };
+    this.state = 'contract';
+  }
+  launchContract(mods) {
+    const seed = this.contract ? this.contract.seed : undefined;
+    this.startRun({ seed, modifiers: mods });
+  }
+  drawContract() {
+    const ctx = this.ctx,
+      W = this.canvas.width,
+      H = this.canvas.height;
+    const c = this.contract;
+    ctx.fillStyle = '#070d10';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#7af5ff';
+    ctx.font = 'bold 24px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('EXPEDITION CONTRACT', W / 2, 56);
+    ctx.fillStyle = '#9fb6c4';
+    ctx.font = '12px monospace';
+    ctx.fillText('Pick up to 2 mutators — higher risk, higher payout. Seed ' + c.seed, W / 2, 80);
+    const agg = aggregate(c.picked);
+    ctx.fillStyle = '#ffd35d';
+    ctx.fillText('Payout ×' + agg.payoutMult.toFixed(2), W / 2, 100);
+    ctx.textAlign = 'left';
+
+    const cardW = 300,
+      gap = 24,
+      total = c.choices.length * cardW + (c.choices.length - 1) * gap;
+    let x = (W - total) / 2;
+    const y = 140;
+    for (const id of c.choices) {
+      const def = MODIFIERS[id];
+      const picked = c.picked.includes(id);
+      this.button(
+        x,
+        y,
+        cardW,
+        150,
+        '',
+        () => {
+          const i = c.picked.indexOf(id);
+          if (i >= 0) c.picked.splice(i, 1);
+          else if (c.picked.length < 2) c.picked.push(id);
+          Sound.device();
+        },
+        true,
+        picked ? '#ff5d8a' : '#6e8bff'
+      );
+      ctx.fillStyle = picked ? '#ff5d8a' : '#dff6ff';
+      ctx.font = 'bold 16px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(def.name, x + cardW / 2, y + 44);
+      ctx.fillStyle = '#cfe0ea';
+      ctx.font = '12px monospace';
+      this.wrapText(def.desc, x + cardW / 2, y + 76, cardW - 30, 16);
+      ctx.fillStyle = '#9fb6c4';
+      ctx.font = '11px monospace';
+      ctx.fillText(picked ? '✓ SELECTED' : 'click to select', x + cardW / 2, y + 132);
+      ctx.textAlign = 'left';
+      x += cardW + gap;
+    }
+
+    this.button(
+      W / 2 - 250,
+      H - 90,
+      230,
+      46,
+      'QUICK DROP (no mutators)',
+      () => this.launchContract([]),
+      true
+    );
+    this.button(
+      W / 2 + 20,
+      H - 90,
+      230,
+      46,
+      '▶ LAUNCH',
+      () => this.launchContract(c.picked),
+      c.picked.length > 0,
+      '#2ee6a8'
+    );
+    this.button(60, H - 70, 150, 36, '◀ BACK', () => (this.state = 'station'), true, '#7af5ff');
   }
   drawWorld() {
     const ctx = this.ctx,
@@ -1492,6 +1674,19 @@ class Game {
       );
       ctx.textAlign = 'left';
     }
+    // class ability pip (bottom-right)
+    if (p.ability) {
+      const ready = p.abilityT <= 0;
+      ctx.fillStyle = ready ? '#2ee6a8' : 'rgba(120,140,150,0.5)';
+      ctx.font = 'bold 11px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(
+        ready ? '[G] ' + p.ability.name : '[G] ' + Math.ceil(p.abilityT) + 's',
+        W - 16,
+        H - 30
+      );
+      ctx.textAlign = 'left';
+    }
 
     // toasts
     let ty = H - 120;
@@ -1776,6 +1971,7 @@ class Game {
     }
 
     // top-right: profile actions
+    this.button(W - 480, 30, 110, 30, 'CLASS', () => (this.state = 'classsel'), true, '#2ee6a8');
     this.button(
       W - 360,
       30,
@@ -1810,7 +2006,7 @@ class Game {
       300,
       46,
       '▶ START NEW EXPEDITION',
-      () => this.startRun(),
+      () => this.beginContract(),
       true,
       '#7af5ff'
     );
