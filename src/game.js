@@ -76,7 +76,7 @@ function defaultMeta() {
     bossKills: 0,
     appearance: defaultAppearance(),
     class: 'vanguard',
-    settings: { master: 0.8, music: 0.6, sfx: 0.9, fxScale: 1 },
+    settings: { master: 0.8, music: 0.6, sfx: 0.9, fxScale: 1, autoFire: false },
     priceMods: { bioResin: 1, sporeFiber: 1, salvageChips: 1, softQuartz: 1, hiveEnzymes: 1 },
   };
 }
@@ -1111,6 +1111,43 @@ class Game {
       this.applySettings();
     });
   }
+  // Two-state toggle row (e.g. Manual / Auto). `on` is the current boolean; each
+  // button sets the value and persists. Mirrors stepperRow's layout.
+  toggleRow(label, y, on, optOff, optOn, set) {
+    const ctx = this.ctx;
+    ctx.fillStyle = '#dff6ff';
+    ctx.font = '14px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(label, 60, y + 20);
+    this.button(
+      280,
+      y,
+      80,
+      30,
+      optOff,
+      () => {
+        set(false);
+        this.save();
+        this.applySettings();
+      },
+      true,
+      on ? '#3a5560' : '#2ee6a8'
+    );
+    this.button(
+      370,
+      y,
+      80,
+      30,
+      optOn,
+      () => {
+        set(true);
+        this.save();
+        this.applySettings();
+      },
+      true,
+      on ? '#2ee6a8' : '#3a5560'
+    );
+  }
   // Shared settings body (title + steppers + hint). Reused by the station
   // SETTINGS screen and the in-game pause menu so the code lives in one place.
   drawSettingsBody() {
@@ -1121,13 +1158,15 @@ class Game {
     ctx.fillText('SETTINGS', 60, 56);
     const s =
       this.meta.settings ||
-      (this.meta.settings = { master: 0.8, music: 0.6, sfx: 0.9, fxScale: 1 });
+      (this.meta.settings = { master: 0.8, music: 0.6, sfx: 0.9, fxScale: 1, autoFire: false });
     this.stepperRow('Master volume', 110, s.master, (v) => (s.master = v));
     this.stepperRow('Music volume', 160, s.music, (v) => (s.music = v));
     this.stepperRow('FX quality', 210, s.fxScale, (v) => (s.fxScale = v));
+    this.toggleRow('Fire mode', 260, !!s.autoFire, 'MANUAL', 'AUTO', (v) => (s.autoFire = v));
     ctx.fillStyle = '#9fb6c4';
     ctx.font = '11px monospace';
-    ctx.fillText('Lower FX quality if you see slowdowns in heavy fights.', 60, 320);
+    ctx.fillText('Lower FX quality if you see slowdowns in heavy fights.', 60, 332);
+    ctx.fillText('Auto fire targets the nearest enemy for you; Manual aims with the mouse.', 60, 348);
   }
   drawSettings() {
     const ctx = this.ctx,

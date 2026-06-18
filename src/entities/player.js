@@ -148,13 +148,16 @@ class Player {
     this.hitFlash = Math.max(0, this.hitFlash - dt * 4);
     this.muzzle = Math.max(0, this.muzzle - dt * 8);
 
-    // aim
-    this.aim = angleTo(
-      this.x,
-      this.y,
-      g.camera.toWorldX(inp.mouseX),
-      g.camera.toWorldY(inp.mouseY)
-    );
+    // aim — Manual follows the mouse (unchanged); Auto Fire locks onto the
+    // nearest enemy so the clone aims and shoots without the mouse.
+    const autoFire = !!(g.meta.settings && g.meta.settings.autoFire);
+    const mwx = g.camera.toWorldX(inp.mouseX),
+      mwy = g.camera.toWorldY(inp.mouseY);
+    const autoTarget = autoFire ? this.findAutoTarget() : null;
+    if (autoTarget) this.aim = angleTo(this.x, this.y, autoTarget.x, autoTarget.y);
+    else this.aim = angleTo(this.x, this.y, mwx, mwy);
+    // where lobbed shots land: cursor in Manual, the locked target in Auto
+    this.fireTarget = autoTarget ? { x: autoTarget.x, y: autoTarget.y } : { x: mwx, y: mwy };
 
     // weapon switching (loadout slots 1/2/3)
     if (inp.wasPressed('1') && this.slots[0]) this.switchWeapon(this.slots[0]);
@@ -182,11 +185,20 @@ class Player {
       ws.reloadT = def.reloadTime;
       Sound.reload();
     }
-    if (inp.mouseDown && !g.uiBlocksFire) this.fire(dt, ws);
-    // charge weapons fire on release
-    if (def.charge && this._prevMouseDown && !inp.mouseDown && !g.uiBlocksFire)
-      this.releaseCharge(ws);
+    // fire intent: Manual = hold LMB; Auto = whenever a target is locked
+    const wantFire = autoFire ? !!autoTarget : inp.mouseDown;
+    if (wantFire && !g.uiBlocksFire) this.fire(dt, ws);
+    // charge weapons release: Manual on mouse-up, Auto when fully charged or the
+    // target is lost (so the held charge isn't wasted)
+    if (def.charge && !g.uiBlocksFire) {
+      if (autoFire) {
+        if (this._prevFire && ((ws.charge || 0) >= 1 || !autoTarget)) this.releaseCharge(ws);
+      } else if (this._prevMouseDown && !inp.mouseDown) {
+        this.releaseCharge(ws);
+      }
+    }
     this._prevMouseDown = inp.mouseDown;
+    this._prevFire = wantFire;
 
     // shield
     if (this.shield) {
@@ -324,6 +336,28 @@ class Player {
       }
     }
   }
+  // Auto Fire target: nearest living hostile within the active weapon's range.
+  // Scans enemies, hives and the boss; returns the entity (with x/y) or null.
+  findAutoTarget() {
+    const g = this.game;
+    const ws = this.weapons[this.weaponKey];
+    const range = (ws && ws.def.range) || 700;
+    let best = null,
+      bd = Infinity;
+    const consider = (e) => {
+      if (!e || e.dead || e.destroyed) return;
+      const d = dist(this.x, this.y, e.x, e.y);
+      if (d > range + (e.radius || 0)) return;
+      if (d < bd) {
+        bd = d;
+        best = e;
+      }
+    };
+    for (const e of g.enemies) consider(e);
+    for (const h of g.hives) consider(h);
+    if (g.boss) consider(g.boss);
+    return best;
+  }
   fire(dt, ws) {
     const def = ws.def;
     // charge weapon: build up while held, fire the burst on release (releaseCharge)
@@ -378,8 +412,12 @@ class Player {
       lobTarget = null,
       fuse = 0;
     if (def.lob) {
-      const tx = g.camera.toWorldX(Input.mouseX),
-        ty = g.camera.toWorldY(Input.mouseY);
+      const ft = this.fireTarget || {
+        x: g.camera.toWorldX(Input.mouseX),
+        y: g.camera.toWorldY(Input.mouseY),
+      };
+      const tx = ft.x,
+        ty = ft.y;
       aimBase = Math.atan2(ty - this.y, tx - this.x);
       lobTarget = { x: tx, y: ty };
       fuse = Math.min(2, dist(this.x, this.y, tx, ty) / def.projSpeed);
